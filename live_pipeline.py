@@ -56,12 +56,22 @@ class SIAVPipeline:
     """
 
     def __init__(self, model_dir: str = MODEL_DIR):
-        model_path = os.path.join(model_dir, "random_forest_model.joblib")
-        columns_path = os.path.join(model_dir, "feature_columns.json")
+        # Tenta a pasta models/ primeiro; se não achar, tenta a raiz do
+        # projeto (caso os arquivos tenham sido enviados soltos, sem pasta).
+        candidates = [model_dir, "."]
+        model_path = columns_path = None
+        for candidate_dir in candidates:
+            mp = os.path.join(candidate_dir, "random_forest_model.joblib")
+            cp = os.path.join(candidate_dir, "feature_columns.json")
+            if os.path.exists(mp) and os.path.exists(cp):
+                model_path, columns_path = mp, cp
+                break
 
-        if not os.path.exists(model_path):
+        if model_path is None:
             raise FileNotFoundError(
-                f"Modelo não encontrado em {model_path}. Rode 'python src/train_model.py' primeiro."
+                f"Modelo não encontrado em '{model_dir}/' nem na raiz do projeto. "
+                "Rode 'python src/train_model.py' primeiro, ou envie "
+                "random_forest_model.joblib e feature_columns.json para o repositório."
             )
 
         self.model = joblib.load(model_path)
