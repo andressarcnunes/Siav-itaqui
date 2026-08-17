@@ -1,0 +1,209 @@
+"""
+app.py
+======
+Dashboard do SIAV-Itaqui — a interface que o Centro de Controle Operacional
+(CCO) veria na prática, e que a banca vai ver rodando na demonstração.
+
+Mostra, em tempo real (simulado):
+  - Gráfico de pressão do berço monitorado
+  - Métricas atuais de pressão, vazão e vibração
+  - Criticidade atual (Nenhum / Baixa / Média / Crítica), com os canais
+    de alerta que seriam acionados em cada nível
+  - Histórico dos alertas emitidos durante a simulação
+
+Como rodar:
+    streamlit run app.py
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+from collections import deque
+
+import pandas as pd
+import streamlit as st
+
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _base_dir)  # caso os arquivos estejam soltos, sem pasta src/
+sys.path.insert(0, os.path.join(_base_dir, "src"))  # caso estejam organizados em src/
+from live_pipeline import SIAVPipeline, simulate_live_feed  # noqa: E402
+from alert_center import AlertCenter, CRITICALITY_CHANNELS  # noqa: E402
+
+st.set_page_config(page_title="SIAV-Itaqui", page_icon="🛟", layout="wide")
+
+CRITICALITY_COLORS = {
+    "Nenhum": "#2ecc71",
+    "Baixa": "#f1c40f",
+    "Média": "#e67e22",
+    "Crítica": "#e74c3c",
+}
+
+SCENARIO_LABELS = {
+    "normal": "Operação normal",
+    "microvazamento": "Microvazamento",
+    "ruptura_parcial": "Ruptura parcial",
+    "ruptura_total": "Ruptura total",
+}
+
+
+def init_state():
+    defaults = {
+        "pipeline": None,
+        "history": deque(maxlen=150),
+        "alert_center": AlertCenter(),
+        "confirmed_criticality": "Nenhum",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+init_state()
+
+# --- Barra lateral: controles da simulação ---
+st.sidebar.title("🛟 SIAV-Itaqui")
+st.sidebar.caption("Sistema Inteligente de Alerta a Vazamentos — Berços 104/108")
+
+berco = st.sidebar.selectbox("Berço monitorado", ["104", "108"])
+scenario = st.sidebar.selectbox(
+    "Cenário a simular",
+    list(SCENARIO_LABELS.keys()),
+    format_func=lambda s: SCENARIO_LABELS[s],
+)
+duration_s = st.sidebar.slider("Duração da simulação (segundos)", 30, 180, 90)
+speed = st.sidebar.slider(
+    "Velocidade (segundos entre leituras)", 0.05, 1.0, 0.2,
+    help="Menor = simulação mais rápida na tela"
+)
+
+start_button = st.sidebar.button("▶️ Iniciar simulação", use_container_width=True, type="primary")
+reset_button = st.sidebar.button("🔄 Resetar", use_container_width=True)
+
+if reset_button:
+    st.session_state.history.clear()
+    st.session_state.alert_center = AlertCenter()
+    st.session_state.confirmed_criticality = "Nenhum"
+    st.rerun()
+
+st.sidebar.divider()
+st.sidebar.caption(
+    "Nota: durante a simulação, a tela roda de forma contínua até o fim "
+    "do período escolhido. Outros controles só respondem depois que ela terminar."
+)
+
+# --- Corpo principal ---
+st.title("Central de Monitoramento — SIAV-Itaqui")
+st.caption("Desafio 2 — Detecção automática de vazamentos no Complexo Portuário do Itaqui")
+
+status_placeholder = st.empty()
+metrics_placeholder = st.empty()
+chart_placeholder = st.empty()
+st.subheader("Histórico de alertas")
+alert_log_placeholder = st.empty()
+
+
+def render_status(criticality: str):
+    color = CRITICALITY_COLORS[criticality]
+    channels = CRITICALITY_CHANNELS[criticality]
+    channel_txt = ", ".join(channels) if channels else "Nenhum canal acionado"
+    status_placeholder.markdown(
+        f"""
+        <div style="background-color:{color}22;border-left:8px solid {color};
+                     padding:16px 20px;border-radius:8px;margin-bottom:16px;">
+            <span style="font-size:1.3em;font-weight:700;color:{color};">
+                Criticidade atual: {criticality}
+            </span><br/>
+            <span style="font-size:0.95em;color:#444;">Canais de alerta: {channel_txt}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_metrics(result: dict):
+    with metrics_placeholder.container():
+        cols = st.columns(4)
+        cols[0].metric("Pressão (bar)", f"{result['pressure_bar']:.2f}")
+        cols[1].metric("Vazão (m³/h)", f"{result['flow_m3h']:.1f}")
+        cols[2].metric("Vibração (mm/s)", f"{result['vibration_mms']:.2f}")
+        cols[3].metric("Classificação do modelo", result["predicted_label"])
+
+
+def render_chart(history: list[dict]):
+    if not history:
+        chart_placeholder.info("Clique em ▶️ Iniciar simulação na barra lateral para começar.")
+        return
+    df = pd.DataFrame(history)
+    chart_placeholder.line_chart(df.set_index("timestamp")[["pressure_bar"]])
+
+
+def render_alert_log():
+    center = st.session_state.alert_center
+    if center.log:
+        rows = [
+            {
+                "Horário": a.timestamp.strftime("%H:%M:%S"),
+                "Berço": a.berco,
+                "Estado detectado": a.predicted_label,
+                "Criticidade": a.criticality,
+                "Canais acionados": ", ".join(a.channels) or "—",
+            }
+            for a in center.log
+        ]
+        alert_log_placeholder.dataframe(pd.DataFrame(rows)[::-1], use_container_width=True, hide_index=True)
+    else:
+        alert_log_placeholder.info("Nenhum alerta emitido ainda nesta simulação.")
+
+
+def render_last_alert_messages():
+    center = st.session_state.alert_center
+    if not center.log:
+        message_placeholder.empty()
+        return
+    last = center.log[-1]
+    with message_placeholder.container():
+        st.markdown(f"**Prévia das mensagens do último alerta** (criticidade: {last.criticality})")
+        for canal, msg in last.messages.items():
+            st.text(f"[{canal}]")
+            st.code(msg, language=None)
+
+
+# --- Estado inicial (antes de qualquer simulação rodar) ---
+render_status(st.session_state.confirmed_criticality)
+if st.session_state.history:
+    render_metrics(st.session_state.history[-1])
+    render_chart(list(st.session_state.history))
+else:
+    metrics_placeholder.empty()
+    chart_placeholder.info("Clique em ▶️ Iniciar simulação na barra lateral para começar.")
+render_alert_log()
+st.subheader("Prévia das mensagens (SMS / WhatsApp simulados)")
+message_placeholder = st.empty()
+render_last_alert_messages()
+
+# --- Loop da simulação ---
+if start_button:
+    st.session_state.pipeline = SIAVPipeline()
+    st.session_state.history.clear()
+    st.session_state.alert_center = AlertCenter()
+    st.session_state.confirmed_criticality = "Nenhum"
+
+    for reading in simulate_live_feed(scenario_label=scenario, berco=berco, duration_s=duration_s):
+        result = st.session_state.pipeline.process_reading(reading)
+        st.session_state.history.append(result)
+
+        alert = st.session_state.alert_center.process(result)
+        if alert:
+            st.session_state.confirmed_criticality = alert.criticality
+
+        render_status(st.session_state.confirmed_criticality)
+        render_metrics(result)
+        render_chart(list(st.session_state.history))
+        render_alert_log()
+        render_last_alert_messages()
+
+        time.sleep(speed)
+
+    st.success("Simulação concluída.")
