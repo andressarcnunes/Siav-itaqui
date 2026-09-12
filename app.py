@@ -8,14 +8,12 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- Configuração Inicial da Página ---
 st.set_page_config(
     page_title="SIAV-Itaqui - Monitoramento",
     page_icon="📊",
     layout="wide"
 )
 
-# --- Funções Auxiliares ---
 def listar_portas_com():
     portas = serial.tools.list_ports.comports()
     return [porta.device for porta in portas]
@@ -42,7 +40,6 @@ def bloco_operador(info):
         return ""
     return f"Informações do Operador / Bancada:\n{info}"
 
-# --- Sidebar / Painel Lateral ---
 st.sidebar.title("Painel de Controle")
 st.sidebar.markdown("---")
 
@@ -63,7 +60,7 @@ st.sidebar.subheader("✉️ Alertas por e-mail")
 email_enabled = st.sidebar.checkbox("Ativar envio de e-mail em alertas", value=False)
 email_destinatario = st.sidebar.text_input("E-mail da brigada/gestão")
 
-with st.sidebar.expand("Configuração do servidor SMTP"):
+with st.sidebar.expander("Configuração do servidor SMTP"):
     _secrets = st.secrets if hasattr(st, "secrets") else {}
     smtp_host = st.text_input("Servidor SMTP", value=_secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com"))
     smtp_port = st.number_input("Porta SMTP", value=int(_secrets.get("SIAV_SMTP_PORT", 587)), step=1)
@@ -95,11 +92,9 @@ if test_email_button:
     else:
         st.sidebar.error(f"Falha ao enviar e-mail: {erro}")
 
-# --- Corpo Principal ---
 st.title("🌊 SIAV-Itaqui - Sistema de Monitoramento de Vazão e Pressão")
 st.markdown("Interface local para coleta de dados via Arduino.")
 
-# Área de exibição de dados em tempo real
 col1, col2 = st.columns(2)
 
 with col1:
