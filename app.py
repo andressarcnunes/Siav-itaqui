@@ -1,26 +1,11 @@
 """
 app.py
 ======
-Dashboard do SIAV-Itaqui — a interface que o Centro de Controle Operacional
-(CCO) veria na prática, e que a banca vai ver rodando na demonstração.
+Dashboard do SIAV-Itaqui — Central de Monitoramento em Tempo Real.
 
-Mostra, em tempo real (simulado):
-  - Gráfico de pressão do berço monitorado
-  - Métricas atuais de pressão, vazão e vibração
-  - Criticidade atual (Nenhum / Baixa / Média / Crítica), com os canais
-    de alerta que seriam acionados em cada nível (Dashboard / SMS /
-    WhatsApp simulados + E-mail real via SMTP)
-  - Histórico dos alertas emitidos durante a simulação, incluindo o
-    status do envio de e-mail
-  - Persistência automática de leituras e alertas em SQLite + CSV, para
-    alimentar relatórios no Google Looker Studio (ver data_export.py)
-  - Sincronização automática com uma Planilha Google
-    ("SIAV_Telemetria_Looker"), via st.secrets["gcp_service_account"] --
-    em LOTE (buffer + append_rows), para não estourar a cota da API do
-    Google Sheets quando a simulação gera muitas leituras por segundo.
-
-Como rodar:
-    streamlit run app.py
+Suporta duas fontes de dados:
+  1. Simulação sintética (para demonstração / Streamlit Cloud)
+  2. Arduino Uno via USB (para testes de bancada física local)
 """
 
 from __future__ import annotations
@@ -29,9 +14,11 @@ import os
 import sys
 import time
 from collections import deque
+from datetime import datetime
 
 import gspread
 import pandas as pd
+import serial
 import streamlit as st
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -58,11 +45,10 @@ SCENARIO_LABELS = {
 
 GOOGLE_SHEETS_NAME = "SIAV_Telemetria_Looker"
 SHEETS_HEADER = ["data_hora", "pressao", "vazao", "status", "operador", "matricula", "turno"]
-SHEETS_FLUSH_INTERVAL_S = 2.0  # intervalo mínimo entre envios em lote, para não estourar a cota da API
+SHEETS_FLUSH_INTERVAL_S = 2.0  # intervalo mínimo entre envios em lote
 
 
 def _obter_sheet():
-    """Autentica com a conta de serviço e retorna a primeira aba da planilha alvo."""
     creds_dict = dict(st.secrets["gcp_service_account"])
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -74,26 +60,12 @@ def _obter_sheet():
 
 
 def _garantir_cabecalho(sheet) -> None:
-    """
-    Se a planilha estiver vazia, insere a linha de cabeçalho antes de
-    qualquer dado. Assim que o cabeçalho existir, o Looker Studio consegue
-    detectar as 7 colunas ao clicar em "Refresh Fields".
-    """
     valores_existentes = sheet.get_all_values()
     if not valores_existentes:
         sheet.append_row(SHEETS_HEADER)
 
 
 def enviar_lote_para_sheets(linhas: list[list]) -> bool:
-    """
-    Envia um LOTE de linhas de uma vez para a Planilha Google, via
-    append_rows -- uma única chamada de API para N leituras, em vez de uma
-    chamada por leitura (o que estourava a cota gratuita do Google Sheets
-    durante simulações rápidas).
-
-    `linhas` já deve estar no formato final (lista de listas, na mesma
-    ordem de SHEETS_HEADER).
-    """
     if not linhas:
         return True
     try:
@@ -104,6 +76,17 @@ def enviar_lote_para_sheets(linhas: list[list]) -> bool:
     except Exception as e:
         st.error(f"Erro ao sincronizar com Google Sheets: {e}")
         return False
+
+
+@st.cache_resource
+def conectar_arduino(porta: str, baudrate: int = 115200):
+    try:
+        ser = serial.Serial(porta, baudrate, timeout=1)
+        time.sleep(2)  # Aguarda reset do Arduino ao abrir serial
+        return ser
+    except Exception as e:
+        st.sidebar.error(f"Erro ao conectar na porta {porta}: {e}")
+        return None
 
 
 def init_state():
@@ -129,23 +112,34 @@ def init_state():
 
 init_state()
 
-# --- Barra lateral: controles da simulação ---
+# --- Barra lateral: seleção de fonte e controles ---
 st.sidebar.title("🛟 SIAV-Itaqui")
 st.sidebar.caption("Sistema Inteligente de Alerta a Vazamentos — Berços 104/108")
 
 berco = st.sidebar.selectbox("Berço monitorado", ["104", "108"])
-scenario = st.sidebar.selectbox(
-    "Cenário a simular",
-    list(SCENARIO_LABELS.keys()),
-    format_func=lambda s: SCENARIO_LABELS[s],
-)
-duration_s = st.sidebar.slider("Duração da simulação (segundos)", 30, 180, 90)
-speed = st.sidebar.slider(
-    "Velocidade (segundos entre leituras)", 0.05, 1.0, 0.2,
-    help="Menor = simulação mais rápida na tela"
+
+# SELETOR DE FONTE DE DADOS (Simulação vs Arduino Local)
+fonte_dados = st.sidebar.radio(
+    "Fonte de Dados",
+    ["Simulação Sintética", "Arduino USB (Bancada Local)"],
+    help="Para usar o Arduino real, execute o Streamlit na sua máquina física via cabo USB."
 )
 
-start_button = st.sidebar.button("▶️ Iniciar simulação", use_container_width=True, type="primary")
+if fonte_dados == "Simulação Sintética":
+    scenario = st.sidebar.selectbox(
+        "Cenário a simular",
+        list(SCENARIO_LABELS.keys()),
+        format_func=lambda s: SCENARIO_LABELS[s],
+    )
+    duration_s = st.sidebar.slider("Duração da simulação (segundos)", 30, 180, 90)
+    speed = st.sidebar.slider("Velocidade (segundos entre leituras)", 0.05, 1.0, 0.2)
+else:
+    porta_com = st.sidebar.text_input("Porta COM (ex: COM3 ou /dev/ttyACM0)", value="COM3")
+    ser_arduino = conectar_arduino(porta_com)
+    if ser_arduino and ser_arduino.is_open:
+        st.sidebar.success(f"Conectado ao Arduino na {porta_com}")
+
+start_button = st.sidebar.button("▶️ Iniciar Captura/Simulação", use_container_width=True, type="primary")
 reset_button = st.sidebar.button("🔄 Resetar", use_container_width=True)
 
 if reset_button:
@@ -157,9 +151,7 @@ if reset_button:
     st.session_state.sheets_last_flush_time = 0.0
     st.rerun()
 
-# --- Barra lateral: identificação do operador de turno ---
-# Rastreabilidade exigida pela Granel Química: todo alerta despachado
-# durante a simulação carrega quem estava no turno no momento do disparo.
+# --- Identificação do operador ---
 st.sidebar.divider()
 st.sidebar.subheader("🧑‍💼 Identificação do Operador")
 
@@ -169,9 +161,7 @@ operador_turno = st.sidebar.selectbox(
     "Turno de Trabalho",
     ["Manhã (06h-14h)", "Tarde (14h-22h)", "Noite (22h-06h)", "Outro"],
 )
-operador_terminal = st.sidebar.text_input(
-    "Terminal/Planta", placeholder="Ex.: Terminal Granel Químico — Itaqui"
-)
+operador_terminal = st.sidebar.text_input("Terminal/Planta", placeholder="Ex.: Terminal Granel Químico — Itaqui")
 
 operador_info = {
     "nome": operador_nome.strip(),
@@ -182,9 +172,9 @@ operador_info = {
 operador_completo = bool(operador_info["nome"] and operador_info["matricula"])
 
 if not operador_completo:
-    st.sidebar.warning("Preencha Nome e Matrícula do operador antes de iniciar a simulação.")
+    st.sidebar.warning("Preencha Nome e Matrícula do operador antes de iniciar.")
 
-# --- Barra lateral: configuração de e-mail (brigada/gestão) ---
+# --- Configuração de e-mail ---
 st.sidebar.divider()
 st.sidebar.subheader("📧 Alertas por e-mail")
 
@@ -196,18 +186,11 @@ email_destinatario = st.sidebar.text_input(
 )
 
 with st.sidebar.expander("Configuração do servidor SMTP"):
-    st.caption(
-        "Dica: guarde essas credenciais em `.streamlit/secrets.toml` em vez "
-        "de digitá-las toda vez. Ex.: SIAV_SMTP_HOST, SIAV_SMTP_USER, "
-        "SIAV_SMTP_PASSWORD (use uma 'senha de app', não a senha normal)."
-    )
     _secrets = st.secrets if hasattr(st, "secrets") else {}
     smtp_host = st.text_input("Servidor SMTP", value=_secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com"))
     smtp_port = st.number_input("Porta SMTP", value=int(_secrets.get("SIAV_SMTP_PORT", 587)), step=1)
     smtp_user = st.text_input("Usuário SMTP (remetente)", value=_secrets.get("SIAV_SMTP_USER", ""))
-    smtp_password = st.text_input(
-        "Senha SMTP", value=_secrets.get("SIAV_SMTP_PASSWORD", ""), type="password"
-    )
+    smtp_password = st.text_input("Senha SMTP", value=_secrets.get("SIAV_SMTP_PASSWORD", ""), type="password")
 
 test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste", use_container_width=True)
 
@@ -216,12 +199,7 @@ if test_email_button:
         st.sidebar.error("Preencha o e-mail de destino e as credenciais SMTP antes de testar.")
     else:
         _bloco_teste = _bloco_operador(operador_info)
-        _mensagem_teste = (
-            "Este é um e-mail de teste do SIAV-Itaqui.\n\n"
-            "Se você recebeu esta mensagem, a configuração de SMTP está "
-            "correta e os alertas de Microvazamento/Ruptura serão "
-            "enviados normalmente para este endereço."
-        )
+        _mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui."
         if _bloco_teste:
             _mensagem_teste = f"{_mensagem_teste}\n\n{_bloco_teste}"
 
@@ -239,41 +217,17 @@ if test_email_button:
         else:
             st.sidebar.error(f"Falha ao enviar e-mail de teste: {erro}")
 
-# --- Barra lateral: sincronização automática com Google Sheets/Looker ---
+# --- Google Sheets / Looker ---
 st.sidebar.divider()
 st.sidebar.subheader("📊 Sincronização com Looker Studio")
 
 sheets_secret_configurado = hasattr(st, "secrets") and "gcp_service_account" in st.secrets
-sheets_sync_enabled = st.sidebar.checkbox(
-    "Sincronizar automaticamente com Google Sheets",
-    value=False,
-    help=(
-        f"Acumula as leituras em memória e envia em LOTE (a cada "
-        f"{SHEETS_FLUSH_INTERVAL_S:.0f}s, e também ao final da simulação) "
-        f"para a Planilha Google '{GOOGLE_SHEETS_NAME}', evitando estourar "
-        "a cota da API. Requer o secret 'gcp_service_account'."
-    ),
-)
+sheets_sync_enabled = st.sidebar.checkbox("Sincronizar automaticamente com Google Sheets", value=True)
 
 if sheets_sync_enabled and not sheets_secret_configurado:
-    st.sidebar.warning(
-        "Secret `gcp_service_account` não encontrado. Configure em "
-        "Settings → Secrets (Streamlit Cloud) ou em `.streamlit/secrets.toml` "
-        "(local) com o JSON da sua conta de serviço do Google Cloud."
-    )
-else:
-    st.sidebar.caption(
-        f"Planilha alvo: **{GOOGLE_SHEETS_NAME}** (compartilhada com a conta de serviço, permissão de Editor). "
-        f"Envio em lote a cada ~{SHEETS_FLUSH_INTERVAL_S:.0f}s."
-    )
+    st.sidebar.warning("Secret `gcp_service_account` não encontrado.")
 
-st.sidebar.divider()
-st.sidebar.caption(
-    "Nota: durante a simulação, a tela roda de forma contínua até o fim "
-    "do período escolhido. Outros controles só respondem depois que ela terminar."
-)
-
-# --- Corpo principal ---
+# --- Corpo Principal ---
 st.title("Central de Monitoramento — SIAV-Itaqui")
 st.caption("Desafio 2 — Detecção automática de vazamentos no Complexo Portuário do Itaqui")
 
@@ -291,7 +245,7 @@ def render_status(criticality: str):
     status_placeholder.markdown(
         f"""
         <div style="background-color:{color}22;border-left:8px solid {color};
-                     padding:16px 20px;border-radius:8px;margin-bottom:16px;">
+                    padding:16px 20px;border-radius:8px;margin-bottom:16px;">
             <span style="font-size:1.3em;font-weight:700;color:{color};">
                 Criticidade atual: {criticality}
             </span><br/>
@@ -305,15 +259,15 @@ def render_status(criticality: str):
 def render_metrics(result: dict):
     with metrics_placeholder.container():
         cols = st.columns(4)
-        cols[0].metric("Pressão (bar)", f"{result['pressure_bar']:.2f}")
-        cols[1].metric("Vazão (m³/h)", f"{result['flow_m3h']:.1f}")
-        cols[2].metric("Vibração (mm/s)", f"{result['vibration_mms']:.2f}")
+        cols[0].metric("Pressão (PSI / bar)", f"{result['pressure_bar']:.2f}")
+        cols[1].metric("Vazão (L/min ou m³/h)", f"{result['flow_m3h']:.1f}")
+        cols[2].metric("Vibração (mm/s)", f"{result.get('vibration_mms', 0.0):.2f}")
         cols[3].metric("Classificação do modelo", result["predicted_label"])
 
 
 def render_chart(history: list[dict]):
     if not history:
-        chart_placeholder.info("Clique em ▶️ Iniciar simulação na barra lateral para começar.")
+        chart_placeholder.info("Aguardando leituras para exibir o gráfico.")
         return
     df = pd.DataFrame(history)
     chart_placeholder.line_chart(df.set_index("timestamp")[["pressure_bar"]])
@@ -338,7 +292,7 @@ def render_alert_log():
         ]
         alert_log_placeholder.dataframe(pd.DataFrame(rows)[::-1], use_container_width=True, hide_index=True)
     else:
-        alert_log_placeholder.info("Nenhum alerta emitido ainda nesta simulação.")
+        alert_log_placeholder.info("Nenhum alerta emitido ainda.")
 
 
 def render_last_alert_messages():
@@ -352,24 +306,16 @@ def render_last_alert_messages():
         for canal, msg in last.messages.items():
             st.text(f"[{canal}]")
             st.code(msg, language=None)
-        if last.email_status:
-            st.caption(f"Status do e-mail: {last.email_status}")
 
 
 def despachar_email_se_preciso(alert):
-    """Se o alerta inclui o canal Email e o envio está ativado/configurado, dispara via SMTP e
-    grava o resultado em alert.email_status (usado no log e na prévia)."""
-    if "Email" not in alert.channels:
-        return
-    if not email_enabled:
-        alert.email_status = "Desativado (ative na barra lateral)"
+    if "Email" not in alert.channels or not email_enabled:
         return
     if not email_destinatario or not smtp_host or not smtp_user or not smtp_password:
         alert.email_status = "Não enviado (configuração incompleta)"
         return
 
     corpo_email = alert.messages.get("Email", "")
-    # alert.messages["Email"] vem como "Assunto: ...\n\n<corpo>"; separa de novo aqui
     if corpo_email.startswith("Assunto: "):
         assunto_linha, _, corpo = corpo_email.partition("\n\n")
         assunto = assunto_linha[len("Assunto: "):]
@@ -390,16 +336,7 @@ def despachar_email_se_preciso(alert):
 
 
 def bufferizar_leitura_para_sheets(result: dict) -> None:
-    """
-    Em vez de chamar a API do Google Sheets a cada leitura (o que estourava
-    a cota gratuita durante simulações rápidas), só ACUMULA a linha em
-    st.session_state.sheets_buffer. O envio de fato acontece em lote, via
-    flush_buffer_sheets(), a cada SHEETS_FLUSH_INTERVAL_S segundos e ao
-    final da simulação.
-    """
-    if not sheets_sync_enabled or not sheets_secret_configurado:
-        return
-    if st.session_state.sheets_sync_error_shown:
+    if not sheets_sync_enabled or not sheets_secret_configurado or st.session_state.sheets_sync_error_shown:
         return
 
     linha = [
@@ -419,7 +356,6 @@ def bufferizar_leitura_para_sheets(result: dict) -> None:
 
 
 def flush_buffer_sheets() -> None:
-    """Envia (em uma única chamada de API) todas as linhas acumuladas desde o último flush."""
     if not st.session_state.sheets_buffer:
         st.session_state.sheets_last_flush_time = time.time()
         return
@@ -429,30 +365,26 @@ def flush_buffer_sheets() -> None:
         st.session_state.sheets_buffer = []
         st.session_state.sheets_last_flush_time = time.time()
     else:
-        # Mantém o buffer intacto e para de tentar novamente nesta sessão,
-        # para não repetir o mesmo erro (e o mesmo estouro de cota) a cada leitura.
         st.session_state.sheets_sync_error_shown = True
 
 
-# --- Estado inicial (antes de qualquer simulação rodar) ---
+# --- Estado inicial ---
 render_status(st.session_state.confirmed_criticality)
 if st.session_state.history:
     render_metrics(st.session_state.history[-1])
     render_chart(list(st.session_state.history))
 else:
     metrics_placeholder.empty()
-    chart_placeholder.info("Clique em ▶️ Iniciar simulação na barra lateral para começar.")
+    chart_placeholder.info("Clique em ▶️ Iniciar Captura/Simulação para começar.")
 render_alert_log()
 st.subheader("Prévia das mensagens (SMS / WhatsApp simulados / E-mail)")
 message_placeholder = st.empty()
 render_last_alert_messages()
 
-# --- Loop da simulação ---
+# --- Execução Principal ---
 if start_button and not operador_completo:
-    st.error(
-        "Não é possível iniciar a simulação sem a identificação do operador de turno "
-        "(Nome e Matrícula) — rastreabilidade obrigatória para o relatório de SMS."
-    )
+    st.error("Preencha Nome e Matrícula do operador para continuar.")
+
 elif start_button:
     st.session_state.pipeline = SIAVPipeline()
     st.session_state.history.clear()
@@ -462,61 +394,83 @@ elif start_button:
     st.session_state.sheets_buffer = []
     st.session_state.sheets_last_flush_time = time.time()
 
-    st.caption(
-        f"Turno em operação: **{operador_info['nome']}** (matrícula {operador_info['matricula']}) "
-        f"— {operador_info['turno']} — {operador_info['terminal'] or 'terminal não informado'}"
-    )
+    # MODO 1: SIMULAÇÃO SINTÉTICA
+    if fonte_dados == "Simulação Sintética":
+        for reading in simulate_live_feed(scenario_label=scenario, berco=berco, duration_s=duration_s):
+            result = st.session_state.pipeline.process_reading(reading)
+            st.session_state.history.append(result)
+            data_export.save_reading(st.session_state.db_conn, result)
+            bufferizar_leitura_para_sheets(result)
 
-    for reading in simulate_live_feed(scenario_label=scenario, berco=berco, duration_s=duration_s):
-        result = st.session_state.pipeline.process_reading(reading)
-        st.session_state.history.append(result)
-        data_export.save_reading(st.session_state.db_conn, result)
-        bufferizar_leitura_para_sheets(result)
+            alert = st.session_state.alert_center.process(result, operador=operador_info)
+            if alert:
+                st.session_state.confirmed_criticality = alert.criticality
+                despachar_email_se_preciso(alert)
+                data_export.save_alert(st.session_state.db_conn, alert)
 
-        alert = st.session_state.alert_center.process(result, operador=operador_info)
-        if alert:
-            st.session_state.confirmed_criticality = alert.criticality
-            despachar_email_se_preciso(alert)
-            data_export.save_alert(st.session_state.db_conn, alert)
+            render_status(st.session_state.confirmed_criticality)
+            render_metrics(result)
+            render_chart(list(st.session_state.history))
+            render_alert_log()
+            render_last_alert_messages()
 
-        render_status(st.session_state.confirmed_criticality)
-        render_metrics(result)
-        render_chart(list(st.session_state.history))
-        render_alert_log()
-        render_last_alert_messages()
+            time.sleep(speed)
 
-        time.sleep(speed)
+    # MODO 2: ARDUINO USB REAL (BANCADA)
+    else:
+        st.info("Coletando telemetria real do Arduino USB. Pressione Stop no topo do aplicativo para interromper.")
+        ser = conectar_arduino(porta_com)
 
-    # Garante que qualquer leitura restante no buffer (menos de
-    # SHEETS_FLUSH_INTERVAL_S desde o último envio) também seja sincronizada.
+        if ser and ser.is_open:
+            while True:
+                if ser.in_waiting > 0:
+                    try:
+                        linha = ser.readline().decode("utf-8").strip()
+                        dados = linha.split(",")
+
+                        if len(dados) == 2:
+                            pressao_val = float(dados[0])
+                            vazao_val = float(dados[1])
+
+                            reading = {
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "pressure_bar": pressao_val,
+                                "flow_m3h": vazao_val,
+                                "vibration_mms": 0.0,
+                                "berco": berco,
+                            }
+
+                            result = st.session_state.pipeline.process_reading(reading)
+                            st.session_state.history.append(result)
+                            data_export.save_reading(st.session_state.db_conn, result)
+                            bufferizar_leitura_para_sheets(result)
+
+                            alert = st.session_state.alert_center.process(result, operador=operador_info)
+                            if alert:
+                                st.session_state.confirmed_criticality = alert.criticality
+                                despachar_email_se_preciso(alert)
+                                data_export.save_alert(st.session_state.db_conn, alert)
+
+                            render_status(st.session_state.confirmed_criticality)
+                            render_metrics(result)
+                            render_chart(list(st.session_state.history))
+                            render_alert_log()
+                            render_last_alert_messages()
+
+                    except Exception as e:
+                        st.warning(f"Aguardando sinal estável do Arduino... ({e})")
+
+                time.sleep(0.2)
+
+    # Flush final ao encerrar
     if sheets_sync_enabled and sheets_secret_configurado and not st.session_state.sheets_sync_error_shown:
         flush_buffer_sheets()
 
-    st.success("Simulação concluída.")
-    st.caption(
-        f"Leituras salvas em `{data_export.READINGS_CSV}` / alertas em "
-        f"`{data_export.ALERTS_CSV}` (e no SQLite `{data_export.DB_PATH}`), "
-        "prontos para o Looker Studio."
-    )
-    if sheets_sync_enabled and sheets_secret_configurado:
-        if st.session_state.sheets_sync_error_shown:
-            st.caption("⚠️ A sincronização com o Google Sheets encontrou um erro durante a simulação (veja acima).")
-        else:
-            st.caption(f"Leituras também sincronizadas em lote com a planilha **{GOOGLE_SHEETS_NAME}**.")
+    st.success("Coleta/Simulação concluída.")
 
-# --- Download dos CSVs para o Looker Studio (caminho manual, sem credenciais) ---
-# Necessário especialmente no Streamlit Cloud, onde não há acesso direto ao
-# sistema de arquivos do servidor: o operador baixa aqui e depois sobe no
-# Google Drive/Sheets para conectar ao Looker Studio. Alternativa simples
-# para quem não configurou a sincronização automática acima.
+# --- Download manual ---
 st.divider()
 st.subheader("📥 Exportar dados para o Looker Studio (manual)")
-st.caption(
-    "Baixe os CSVs atualizados e suba-os no Google Drive (ou em uma Planilha "
-    "Google) para conectar ao Looker Studio. Alternativa útil se a "
-    "sincronização automática não estiver configurada."
-)
-
 col_dl1, col_dl2 = st.columns(2)
 
 if os.path.exists(data_export.READINGS_CSV):
@@ -528,8 +482,6 @@ if os.path.exists(data_export.READINGS_CSV):
             mime="text/csv",
             use_container_width=True,
         )
-else:
-    col_dl1.info("Ainda não há leituras salvas. Rode uma simulação primeiro.")
 
 if os.path.exists(data_export.ALERTS_CSV):
     with open(data_export.ALERTS_CSV, "rb") as f:
@@ -540,5 +492,3 @@ if os.path.exists(data_export.ALERTS_CSV):
             mime="text/csv",
             use_container_width=True,
         )
-else:
-    col_dl2.info("Ainda não há alertas salvos. Rode uma simulação com anomalia primeiro.")
