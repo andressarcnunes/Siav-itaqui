@@ -152,7 +152,7 @@ if reset_button:
     st.rerun()
 
 # --- Identificação do operador ---
-st.sidebar.divider()
+st.sidebar.markdown("---")
 st.sidebar.subheader("🧑‍💼 Identificação do Operador")
 
 operador_nome = st.sidebar.text_input("Nome do Operador", placeholder="Ex.: João da Silva")
