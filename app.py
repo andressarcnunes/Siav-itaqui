@@ -179,12 +179,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("📧 Alertas por e-mail")
 
 email_enabled = st.sidebar.checkbox("Ativar envio de e-mail em alertas", value=False)
-email_destinatario = st.sidebar.text_input(
-    "E-mail da brigada/gestão",
-    value=st.secrets.get("SIAV_EMAIL_DESTINATARIO", "") if hasattr(st, "secrets") else "",
-    placeholder="brigada@empresa.com",
-)
-
+email_destinatario = st.sidebar.text_input("E-mail da brigada/gestão")
 with st.sidebar.expander("Configuração do servidor SMTP"):
     _secrets = st.secrets if hasattr(st, "secrets") else {}
     smtp_host = st.text_input("Servidor SMTP", value=_secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com"))
@@ -192,11 +187,11 @@ with st.sidebar.expander("Configuração do servidor SMTP"):
     smtp_user = st.text_input("Usuário SMTP (remetente)", value=_secrets.get("SIAV_SMTP_USER", ""))
     smtp_password = st.text_input("Senha SMTP", value=_secrets.get("SIAV_SMTP_PASSWORD", ""), type="password")
 
-test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste", use_container_width=True)
+test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste")
 
 if test_email_button:
     if not email_destinatario or not smtp_host or not smtp_user or not smtp_password:
-        st.sidebar.error("Preencha o e-mail de destino e as credenciais SMTP antes de testar.")
+        
     else:
         _bloco_teste = _bloco_operador(operador_info)
         _mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui."
