@@ -327,18 +327,24 @@ smtp_port = st.sidebar.number_input("Porta SMTP", value=_smtp_port_padrao, step=
 smtp_user = st.sidebar.text_input("Usuário SMTP (remetente)", value=_smtp_user_padrao)
 smtp_password = st.sidebar.text_input("Senha SMTP", value=_smtp_password_padrao, type="password")
 
-            if bloco_teste:
-            mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
+test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste")
 
-        ok, erro = enviar_email_alerta(
-            destinatario=email_destinatario,
-            assunto="[SIAV-Itaqui] E-mail de teste",
-            mensagem=mensagem_teste,
-            smtp_host=smtp_host,
-            smtp_port=int(smtp_port),
-            smtp_user=smtp_user,
-            smtp_password=smtp_password,
-        )
+if test_email_button:
+    mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
+
+    ok, erro = enviar_email_alerta(
+        destinatario=email_email_destinatario if 'email_email_destinatario' in locals() else email_destinatario,
+        assunto="[SIAV-Itaqui] E-mail de teste",
+        mensagem=mensagem_teste,
+        smtp_host=smtp_host,
+        smtp_port=int(smtp_port),
+        smtp_user=smtp_user,
+        smtp_password=smtp_password,
+    )
+    if ok:
+        st.sidebar.success("E-mail de teste enviado com sucesso")
+    else:
+        st.sidebar.error(f"Falha ao enviar e-mail de teste: {str(erro)}")
         if ok:
             st.sidebar.success("E-mail de teste enviado com sucesso!")
         else:
