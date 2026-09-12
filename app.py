@@ -355,3 +355,40 @@ elif start_button:
         f"`{data_export.ALERTS_CSV}` (e no SQLite `{data_export.DB_PATH}`), "
         "prontos para o Looker Studio."
     )
+
+# --- Download dos CSVs para o Looker Studio ---
+# Necessário especialmente no Streamlit Cloud, onde não há acesso direto ao
+# sistema de arquivos do servidor: o operador baixa aqui e depois sobe no
+# Google Drive/Sheets para conectar ao Looker Studio.
+st.divider()
+st.subheader("📥 Exportar dados para o Looker Studio")
+st.caption(
+    "Baixe os CSVs atualizados e suba-os no Google Drive (ou em uma Planilha "
+    "Google) para conectar ao Looker Studio."
+)
+
+col_dl1, col_dl2 = st.columns(2)
+
+if os.path.exists(data_export.READINGS_CSV):
+    with open(data_export.READINGS_CSV, "rb") as f:
+        col_dl1.download_button(
+            "⬇️ Baixar live_readings.csv",
+            data=f.read(),
+            file_name="live_readings.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+else:
+    col_dl1.info("Ainda não há leituras salvas. Rode uma simulação primeiro.")
+
+if os.path.exists(data_export.ALERTS_CSV):
+    with open(data_export.ALERTS_CSV, "rb") as f:
+        col_dl2.download_button(
+            "⬇️ Baixar live_alerts.csv",
+            data=f.read(),
+            file_name="live_alerts.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+else:
+    col_dl2.info("Ainda não há alertas salvos. Rode uma simulação com anomalia primeiro.")
