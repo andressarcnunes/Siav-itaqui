@@ -322,23 +322,7 @@ email_destinatario = st.sidebar.text_input(
 )
 st.sidebar.caption("Ex.: brigada@empresa.com")
 
-smtp_expander = obter_expander(st.sidebar, "Configuração do servidor SMTP")
-with smtp_expander:
-    st.caption(
-        "Dica: guarde essas credenciais em .streamlit/secrets.toml em vez "
-        "de digitar toda vez. Ex.: SIAV_SMTP_HOST, SIAV_SMTP_USER, "
-        "SIAV_SMTP_PASSWORD (use uma 'senha de app', nao a senha normal)."
-    )
-    try:
-        _smtp_host_padrao = _secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com")
-        _smtp_port_padrao = int(_secrets.get("SIAV_SMTP_PORT", 587))
-        _smtp_user_padrao = _secrets.get("SIAV_SMTP_USER", "")
-        _smtp_password_padrao = _secrets.get("SIAV_SMTP_PASSWORD", "")
-    except Exception:
-        _smtp_host_padrao = "smtp.gmail.com"
-        _smtp_port_padrao = 587
-        _smtp_user_padrao = ""
-        _smtp_password_padrao = ""
+
 
     smtp_host = st.text_input("Servidor SMTP", value=_smtp_host_padrao)
     smtp_port = st.number_input("Porta SMTP", value=_smtp_port_padrao, step=1)
