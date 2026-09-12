@@ -175,7 +175,7 @@ if not operador_completo:
     st.sidebar.warning("Preencha Nome e Matrícula do operador antes de iniciar.")
 
 # --- Configuração de e-mail ---
-st.sidebar.divider()
+st.sidebar.markdown("---")
 st.sidebar.subheader("📧 Alertas por e-mail")
 
 email_enabled = st.sidebar.checkbox("Ativar envio de e-mail em alertas", value=False)
@@ -218,7 +218,7 @@ if test_email_button:
             st.sidebar.error(f"Falha ao enviar e-mail de teste: {erro}")
 
 # --- Google Sheets / Looker ---
-st.sidebar.divider()
+st.sidebar.markdown("---")
 st.sidebar.subheader("📊 Sincronização com Looker Studio")
 
 sheets_secret_configurado = hasattr(st, "secrets") and "gcp_service_account" in st.secrets
