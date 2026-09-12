@@ -78,7 +78,7 @@ def enviar_lote_para_sheets(linhas: list[list]) -> bool:
         return False
 
 
-@st.cache_resource
+
 def conectar_arduino(porta: str, baudrate: int = 115200):
     try:
         ser = serial.Serial(porta, baudrate, timeout=1)
