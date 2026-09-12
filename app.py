@@ -322,27 +322,12 @@ email_destinatario = st.sidebar.text_input(
 )
 st.sidebar.caption("Ex.: brigada@empresa.com")
 
+smtp_host = st.sidebar.text_input("Servidor SMTP", value=_smtp_host_padrao)
+smtp_port = st.sidebar.number_input("Porta SMTP", value=_smtp_port_padrao, step=1)
+smtp_user = st.sidebar.text_input("Usuário SMTP (remetente)", value=_smtp_user_padrao)
+smtp_password = st.sidebar.text_input("Senha SMTP", value=_smtp_password_padrao, type="password")
 
-
-    smtp_host = st.text_input("Servidor SMTP", value=_smtp_host_padrao)
-    smtp_port = st.number_input("Porta SMTP", value=_smtp_port_padrao, step=1)
-    smtp_user = st.text_input("Usuário SMTP (remetente)", value=_smtp_user_padrao)
-    smtp_password = st.text_input("Senha SMTP", value=_smtp_password_padrao, type="password")
-
-test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste")
-
-if test_email_button:
-    if not email_destinatario or not smtp_host or not smtp_user or not smtp_password:
-        st.sidebar.error("Preencha o e-mail de destino e as credenciais SMTP antes de testar.")
-    else:
-        bloco_teste = _bloco_operador(operador_info)
-        mensagem_teste = (
-            "Este e um e-mail de teste do SIAV-Itaqui.\n\n"
-            "Se voce recebeu esta mensagem, a configuracao de SMTP esta "
-            "correta e os alertas de Microvazamento/Ruptura serao "
-            "enviados normalmente para este endereco."
-        )
-        if bloco_teste:
+            if bloco_teste:
             mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
 
         ok, erro = enviar_email_alerta(
