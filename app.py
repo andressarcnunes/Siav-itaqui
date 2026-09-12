@@ -17,6 +17,7 @@ Como rodar (localmente, com o Arduino conectado por USB):
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 import time
@@ -170,6 +171,36 @@ def enviar_lote_para_sheets(linhas):
         return False
 
 
+def fazer_rerun():
+    try:
+        st.rerun()
+    except AttributeError:
+        st.experimental_rerun()
+
+
+def oferecer_download(destino, rotulo, dados_bytes, nome_arquivo, mime):
+    """
+    Oferece um link/botao de download que funciona em QUALQUER versao do
+    Streamlit. Versoes recentes tem st.download_button (mais bonito);
+    versoes antigas (como 0.84.1) nao tem essa funcao, entao caimos para
+    um link HTML puro com o arquivo embutido em base64 -- isso sempre
+    funcionou, mesmo nas primeiras versoes do Streamlit, porque e so
+    markdown com HTML.
+    """
+    if hasattr(destino, "download_button"):
+        destino.download_button(rotulo, data=dados_bytes, file_name=nome_arquivo, mime=mime)
+        return
+
+    b64 = base64.b64encode(dados_bytes).decode()
+    href = (
+        '<a href="data:' + mime + ';base64,' + b64 + '" download="' + nome_arquivo + '" '
+        'style="display:inline-block;padding:0.5em 1em;background-color:#ff4b4b;'
+        'color:white;border-radius:6px;text-decoration:none;font-weight:600;">'
+        + rotulo + '</a>'
+    )
+    destino.markdown(href, unsafe_allow_html=True)
+
+
 def init_state():
     defaults = {
         "pipeline": None,
@@ -235,7 +266,7 @@ if fonte_dados == "Arduino (Leitura Serial USB)":
 else:
     start_label = "▶️ Iniciar simulação"
 
-start_button = st.sidebar.button(start_label, type="primary")
+start_button = st.sidebar.button(start_label)
 reset_button = st.sidebar.button("🔄 Resetar")
 
 if reset_button:
@@ -245,21 +276,22 @@ if reset_button:
     st.session_state.sheets_sync_error_shown = False
     st.session_state.sheets_buffer = []
     st.session_state.sheets_last_flush_time = 0.0
-    st.rerun()
+    fazer_rerun()
 
 # --- Barra lateral: identificação do operador de turno ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧑‍💼 Identificação do Operador")
 
-operador_nome = st.sidebar.text_input("Nome do Operador", placeholder="Ex.: João da Silva")
-operador_matricula = st.sidebar.text_input("Matrícula/ID", placeholder="Ex.: OP-00123")
+operador_nome = st.sidebar.text_input("Nome do Operador")
+st.sidebar.caption("Ex.: João da Silva")
+operador_matricula = st.sidebar.text_input("Matrícula/ID")
+st.sidebar.caption("Ex.: OP-00123")
 operador_turno = st.sidebar.selectbox(
     "Turno de Trabalho",
     ["Manhã (06h-14h)", "Tarde (14h-22h)", "Noite (22h-06h)", "Outro"],
 )
-operador_terminal = st.sidebar.text_input(
-    "Terminal/Planta", placeholder="Ex.: Terminal Granel Químico — Itaqui"
-)
+operador_terminal = st.sidebar.text_input("Terminal/Planta")
+st.sidebar.caption("Ex.: Terminal Granel Químico — Itaqui")
 
 operador_info = {
     "nome": operador_nome.strip(),
@@ -287,8 +319,8 @@ except Exception:
 email_destinatario = st.sidebar.text_input(
     "E-mail da brigada/gestão",
     value=_email_padrao,
-    placeholder="brigada@empresa.com",
 )
+st.sidebar.caption("Ex.: brigada@empresa.com")
 
 smtp_expander = st.sidebar.expander("Configuração do servidor SMTP")
 with smtp_expander:
@@ -399,12 +431,19 @@ def render_status(criticality):
 
 
 def render_metrics(result):
-    with metrics_placeholder.container():
-        cols = st.columns(4)
-        cols[0].metric("Pressão (bar)", "{:.2f}".format(result["pressure_bar"]))
-        cols[1].metric("Vazão (m³/h)", "{:.1f}".format(result["flow_m3h"]))
-        cols[2].metric("Vibração (mm/s)", "{:.2f}".format(result["vibration_mms"]))
-        cols[3].metric("Classificação do modelo", result["predicted_label"])
+    html = (
+        '<div style="display:flex;gap:24px;margin-bottom:12px;">'
+        '<div><div style="font-size:0.8em;color:#888;">Pressão (bar)</div>'
+        '<div style="font-size:1.6em;font-weight:700;">' + "{:.2f}".format(result["pressure_bar"]) + '</div></div>'
+        '<div><div style="font-size:0.8em;color:#888;">Vazão (m³/h)</div>'
+        '<div style="font-size:1.6em;font-weight:700;">' + "{:.1f}".format(result["flow_m3h"]) + '</div></div>'
+        '<div><div style="font-size:0.8em;color:#888;">Vibração (mm/s)</div>'
+        '<div style="font-size:1.6em;font-weight:700;">' + "{:.2f}".format(result["vibration_mms"]) + '</div></div>'
+        '<div><div style="font-size:0.8em;color:#888;">Classificação do modelo</div>'
+        '<div style="font-size:1.6em;font-weight:700;">' + str(result["predicted_label"]) + '</div></div>'
+        '</div>'
+    )
+    metrics_placeholder.markdown(html, unsafe_allow_html=True)
 
 
 def render_chart(history):
@@ -444,14 +483,15 @@ def render_last_alert_messages():
         message_placeholder.empty()
         return
     last = center.log[-1]
-    with message_placeholder.container():
-        st.markdown("**Prévia das mensagens do último alerta** (criticidade: " + last.criticality + ")")
-        for canal in last.messages:
-            msg = last.messages[canal]
-            st.text("[" + canal + "]")
-            st.code(msg, language=None)
-        if last.email_status:
-            st.caption("Status do e-mail: " + last.email_status)
+
+    texto = "**Prévia das mensagens do último alerta** (criticidade: " + last.criticality + ")\n\n"
+    for canal in last.messages:
+        msg = last.messages[canal]
+        texto = texto + "**[" + canal + "]**\n\n```\n" + msg + "\n```\n\n"
+    if last.email_status:
+        texto = texto + "_Status do e-mail: " + last.email_status + "_"
+
+    message_placeholder.markdown(texto)
 
 
 def despachar_email_se_preciso(alert):
@@ -628,12 +668,7 @@ if os.path.exists(data_export.READINGS_CSV):
     arquivo_leituras = open(data_export.READINGS_CSV, "rb")
     dados_leituras = arquivo_leituras.read()
     arquivo_leituras.close()
-    col_dl1.download_button(
-        "⬇️ Baixar live_readings.csv",
-        data=dados_leituras,
-        file_name="live_readings.csv",
-        mime="text/csv",
-    )
+    oferecer_download(col_dl1, "⬇️ Baixar live_readings.csv", dados_leituras, "live_readings.csv", "text/csv")
 else:
     col_dl1.info("Ainda não há leituras salvas. Rode uma simulação/leitura primeiro.")
 
@@ -641,11 +676,6 @@ if os.path.exists(data_export.ALERTS_CSV):
     arquivo_alertas = open(data_export.ALERTS_CSV, "rb")
     dados_alertas = arquivo_alertas.read()
     arquivo_alertas.close()
-    col_dl2.download_button(
-        "⬇️ Baixar live_alerts.csv",
-        data=dados_alertas,
-        file_name="live_alerts.csv",
-        mime="text/csv",
-    )
+    oferecer_download(col_dl2, "⬇️ Baixar live_alerts.csv", dados_alertas, "live_alerts.csv", "text/csv")
 else:
     col_dl2.info("Ainda não há alertas salvos. Rode uma simulação/leitura com anomalia primeiro.")
