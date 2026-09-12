@@ -193,34 +193,25 @@ if test_email_button:
     if not email_destinatario or not smtp_host or not smtp_user or not smtp_password:
         st.sidebar.error("Preencha o e-mail de destino e as credenciais SMTP antes de testar.")
     
-    bloco_teste = bloco_operador(operador_info)
+   bloco_teste = bloco_operador(operador_info)
     mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui."
-        if _bloco_teste:
-            _mensagem_teste = f"{_mensagem_teste}\n\n{_bloco_teste}"
+    if _bloco_teste:
+        mensagem_teste = f"{mensagem_teste}\n\n{_bloco_teste}"
 
-        ok, erro = enviar_email_alerta(
-            destinatario=email_destinatario,
-            assunto="[SIAV-Itaqui] E-mail de teste",
-            mensagem=_mensagem_teste,
-            smtp_host=smtp_host,
-            smtp_port=int(smtp_port),
-            smtp_user=smtp_user,
-            smtp_password=smtp_password,
-        )
-        if ok:
-            st.sidebar.success("E-mail de teste enviado com sucesso!")
-        else:
-            st.sidebar.error(f"Falha ao enviar e-mail de teste: {erro}")
-
-# --- Google Sheets / Looker ---
-st.sidebar.markdown("---")
-st.sidebar.subheader("📊 Sincronização com Looker Studio")
-
-sheets_secret_configurado = hasattr(st, "secrets") and "gcp_service_account" in st.secrets
-sheets_sync_enabled = st.sidebar.checkbox("Sincronizar automaticamente com Google Sheets", value=True)
-
-if sheets_sync_enabled and not sheets_secret_configurado:
-    st.sidebar.warning("Secret `gcp_service_account` não encontrado.")
+    ok, erro = enviar_email_alerta(
+        destinatario=email_destinatario,
+        assunto="[SIAV-Itaqui] E-mail de teste",
+        mensagem=mensagem_teste,
+        smtp_host=smtp_host,
+        smtp_port=int(smtp_port),
+        smtp_user=smtp_user,
+        smtp_password=smtp_password,
+    )
+    if ok:
+        st.sidebar.success("E-mail de teste enviado com sucesso!")
+    else:
+        st.sidebar.error(f"Falha ao enviar e-mail: {erro}")
+       
 
 # --- Corpo Principal ---
 st.title("Central de Monitoramento — SIAV-Itaqui")
