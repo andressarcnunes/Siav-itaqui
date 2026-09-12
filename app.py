@@ -155,13 +155,13 @@ if reset_button:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧑‍💼 Identificação do Operador")
 
-operador_nome = st.sidebar.text_input("Nome do Operador", placeholder="Ex.: João da Silva")
-operador_matricula = st.sidebar.text_input("Matrícula/ID", placeholder="Ex.: OP-00123")
+operador_nome = st.sidebar.text_input("Nome do Operador")
+operador_matricula = st.sidebar.text_input("Matrícula/ID")
 operador_turno = st.sidebar.selectbox(
     "Turno de Trabalho",
     ["Manhã (06h-14h)", "Tarde (14h-22h)", "Noite (22h-06h)", "Outro"],
 )
-operador_terminal = st.sidebar.text_input("Terminal/Planta", placeholder="Ex.: Terminal Granel Químico — Itaqui")
+operador_terminal = st.sidebar.text_input("Terminal/Planta")
 
 operador_info = {
     "nome": operador_nome.strip(),
