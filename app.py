@@ -191,10 +191,10 @@ test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste")
 
 if test_email_button:
     if not email_destinatario or not smtp_host or not smtp_user or not smtp_password:
-        
-    else:
-        _bloco_teste = _bloco_operador(operador_info)
-        _mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui."
+        st.sidebar.error("Preencha o e-mail de destino e as credenciais SMTP antes de testar.")
+    
+    bloco_teste = bloco_operador(operador_info)
+    mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui."
         if _bloco_teste:
             _mensagem_teste = f"{_mensagem_teste}\n\n{_bloco_teste}"
 
