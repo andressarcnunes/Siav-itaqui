@@ -11,7 +11,7 @@ st.markdown("---")
 porta = st.sidebar.text_input("Porta COM", value="COM3")
 baudrate = 115200
 
-@st.cache(allow_output_mutation=true)
+@st.cache(allow_output_mutation=True)
 def conectar(p, b):
     try:
         ser = serial.Serial(p, b, timeout=1)
