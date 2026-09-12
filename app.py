@@ -14,10 +14,10 @@ Mostra, em tempo real (simulado):
     status do envio de e-mail
   - Persistência automática de leituras e alertas em SQLite + CSV, para
     alimentar relatórios no Google Looker Studio (ver data_export.py)
-  - Sincronização automática, leitura a leitura, com uma Planilha Google
-    ("SIAV_Telemetria_Looker"), via st.secrets["gcp_service_account"] —
-    dispensa o passo manual de baixar/subir CSV para alimentar o Looker
-    Studio quase em tempo real.
+  - Sincronização automática com uma Planilha Google
+    ("SIAV_Telemetria_Looker"), via st.secrets["gcp_service_account"] --
+    em LOTE (buffer + append_rows), para não estourar a cota da API do
+    Google Sheets quando a simulação gera muitas leituras por segundo.
 
 Como rodar:
     streamlit run app.py
@@ -57,39 +57,49 @@ SCENARIO_LABELS = {
 }
 
 GOOGLE_SHEETS_NAME = "SIAV_Telemetria_Looker"
+SHEETS_HEADER = ["data_hora", "pressao", "vazao", "status", "operador", "matricula", "turno"]
+SHEETS_FLUSH_INTERVAL_S = 2.0  # intervalo mínimo entre envios em lote, para não estourar a cota da API
 
 
-def enviar_dados_automatico(data_hora, pressao, vazao, status, operador, matricula, turno) -> bool:
+def _obter_sheet():
+    """Autentica com a conta de serviço e retorna a primeira aba da planilha alvo."""
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    return client.open(GOOGLE_SHEETS_NAME).sheet1
+
+
+def _garantir_cabecalho(sheet) -> None:
     """
-    Envia uma linha de telemetria/alerta em tempo real para a Planilha Google
-    "SIAV_Telemetria_Looker", que serve de fonte de dados ao vivo para o
-    Looker Studio.
-
-    Credenciais da conta de serviço vêm de st.secrets["gcp_service_account"]
-    (configuradas em .streamlit/secrets.toml localmente, ou em
-    Settings -> Secrets no Streamlit Cloud) -- nunca ficam hardcoded no
-    código nem sobem para o GitHub.
+    Se a planilha estiver vazia, insere a linha de cabeçalho antes de
+    qualquer dado. Assim que o cabeçalho existir, o Looker Studio consegue
+    detectar as 7 colunas ao clicar em "Refresh Fields".
     """
+    valores_existentes = sheet.get_all_values()
+    if not valores_existentes:
+        sheet.append_row(SHEETS_HEADER)
+
+
+def enviar_lote_para_sheets(linhas: list[list]) -> bool:
+    """
+    Envia um LOTE de linhas de uma vez para a Planilha Google, via
+    append_rows -- uma única chamada de API para N leituras, em vez de uma
+    chamada por leitura (o que estourava a cota gratuita do Google Sheets
+    durante simulações rápidas).
+
+    `linhas` já deve estar no formato final (lista de listas, na mesma
+    ordem de SHEETS_HEADER).
+    """
+    if not linhas:
+        return True
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open(GOOGLE_SHEETS_NAME).sheet1
-
-        nova_linha = [
-            str(data_hora),
-            float(pressao),
-            float(vazao),
-            str(status),
-            str(operador),
-            str(matricula),
-            str(turno),
-        ]
-        sheet.append_row(nova_linha)
+        sheet = _obter_sheet()
+        _garantir_cabecalho(sheet)
+        sheet.append_rows(linhas, value_input_option="USER_ENTERED")
         return True
     except Exception as e:
         st.error(f"Erro ao sincronizar com Google Sheets: {e}")
@@ -104,6 +114,8 @@ def init_state():
         "confirmed_criticality": "Nenhum",
         "db_conn": None,
         "sheets_sync_error_shown": False,
+        "sheets_buffer": [],
+        "sheets_last_flush_time": 0.0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -141,6 +153,8 @@ if reset_button:
     st.session_state.alert_center = AlertCenter()
     st.session_state.confirmed_criticality = "Nenhum"
     st.session_state.sheets_sync_error_shown = False
+    st.session_state.sheets_buffer = []
+    st.session_state.sheets_last_flush_time = 0.0
     st.rerun()
 
 # --- Barra lateral: identificação do operador de turno ---
@@ -234,9 +248,10 @@ sheets_sync_enabled = st.sidebar.checkbox(
     "Sincronizar automaticamente com Google Sheets",
     value=False,
     help=(
-        f"Envia cada leitura em tempo real para a Planilha Google "
-        f"'{GOOGLE_SHEETS_NAME}', que alimenta o Looker Studio. "
-        "Requer a credencial 'gcp_service_account' configurada em Secrets."
+        f"Acumula as leituras em memória e envia em LOTE (a cada "
+        f"{SHEETS_FLUSH_INTERVAL_S:.0f}s, e também ao final da simulação) "
+        f"para a Planilha Google '{GOOGLE_SHEETS_NAME}', evitando estourar "
+        "a cota da API. Requer o secret 'gcp_service_account'."
     ),
 )
 
@@ -248,7 +263,8 @@ if sheets_sync_enabled and not sheets_secret_configurado:
     )
 else:
     st.sidebar.caption(
-        f"Planilha alvo: **{GOOGLE_SHEETS_NAME}** (compartilhada com a conta de serviço, permissão de Editor)."
+        f"Planilha alvo: **{GOOGLE_SHEETS_NAME}** (compartilhada com a conta de serviço, permissão de Editor). "
+        f"Envio em lote a cada ~{SHEETS_FLUSH_INTERVAL_S:.0f}s."
     )
 
 st.sidebar.divider()
@@ -373,31 +389,48 @@ def despachar_email_se_preciso(alert):
     alert.email_status = "Enviado com sucesso" if ok else f"Falha: {erro}"
 
 
-def sincronizar_com_sheets_se_ativo(result: dict) -> None:
+def bufferizar_leitura_para_sheets(result: dict) -> None:
     """
-    Chama enviar_dados_automatico() para a leitura atual, se a sincronização
-    estiver ativada e o secret 'gcp_service_account' estiver configurado.
-
-    Depois da primeira falha, para de tentar de novo na mesma sessão (evita
-    inundar a tela de erros a cada leitura caso a credencial esteja errada)
-    -- o operador ainda vê o motivo da falha uma vez, no expander de logs.
+    Em vez de chamar a API do Google Sheets a cada leitura (o que estourava
+    a cota gratuita durante simulações rápidas), só ACUMULA a linha em
+    st.session_state.sheets_buffer. O envio de fato acontece em lote, via
+    flush_buffer_sheets(), a cada SHEETS_FLUSH_INTERVAL_S segundos e ao
+    final da simulação.
     """
     if not sheets_sync_enabled or not sheets_secret_configurado:
         return
     if st.session_state.sheets_sync_error_shown:
         return
 
-    status = result["predicted_label"]
-    ok = enviar_dados_automatico(
-        data_hora=result["timestamp"],
-        pressao=result["pressure_bar"],
-        vazao=result["flow_m3h"],
-        status=status,
-        operador=operador_info["nome"],
-        matricula=operador_info["matricula"],
-        turno=operador_info["turno"],
-    )
-    if not ok:
+    linha = [
+        str(result["timestamp"]),
+        float(result["pressure_bar"]),
+        float(result["flow_m3h"]),
+        str(result["predicted_label"]),
+        str(operador_info["nome"]),
+        str(operador_info["matricula"]),
+        str(operador_info["turno"]),
+    ]
+    st.session_state.sheets_buffer.append(linha)
+
+    agora = time.time()
+    if agora - st.session_state.sheets_last_flush_time >= SHEETS_FLUSH_INTERVAL_S:
+        flush_buffer_sheets()
+
+
+def flush_buffer_sheets() -> None:
+    """Envia (em uma única chamada de API) todas as linhas acumuladas desde o último flush."""
+    if not st.session_state.sheets_buffer:
+        st.session_state.sheets_last_flush_time = time.time()
+        return
+
+    ok = enviar_lote_para_sheets(st.session_state.sheets_buffer)
+    if ok:
+        st.session_state.sheets_buffer = []
+        st.session_state.sheets_last_flush_time = time.time()
+    else:
+        # Mantém o buffer intacto e para de tentar novamente nesta sessão,
+        # para não repetir o mesmo erro (e o mesmo estouro de cota) a cada leitura.
         st.session_state.sheets_sync_error_shown = True
 
 
@@ -426,6 +459,8 @@ elif start_button:
     st.session_state.alert_center = AlertCenter()
     st.session_state.confirmed_criticality = "Nenhum"
     st.session_state.sheets_sync_error_shown = False
+    st.session_state.sheets_buffer = []
+    st.session_state.sheets_last_flush_time = time.time()
 
     st.caption(
         f"Turno em operação: **{operador_info['nome']}** (matrícula {operador_info['matricula']}) "
@@ -436,7 +471,7 @@ elif start_button:
         result = st.session_state.pipeline.process_reading(reading)
         st.session_state.history.append(result)
         data_export.save_reading(st.session_state.db_conn, result)
-        sincronizar_com_sheets_se_ativo(result)
+        bufferizar_leitura_para_sheets(result)
 
         alert = st.session_state.alert_center.process(result, operador=operador_info)
         if alert:
@@ -452,14 +487,22 @@ elif start_button:
 
         time.sleep(speed)
 
+    # Garante que qualquer leitura restante no buffer (menos de
+    # SHEETS_FLUSH_INTERVAL_S desde o último envio) também seja sincronizada.
+    if sheets_sync_enabled and sheets_secret_configurado and not st.session_state.sheets_sync_error_shown:
+        flush_buffer_sheets()
+
     st.success("Simulação concluída.")
     st.caption(
         f"Leituras salvas em `{data_export.READINGS_CSV}` / alertas em "
         f"`{data_export.ALERTS_CSV}` (e no SQLite `{data_export.DB_PATH}`), "
         "prontos para o Looker Studio."
     )
-    if sheets_sync_enabled and sheets_secret_configurado and not st.session_state.sheets_sync_error_shown:
-        st.caption(f"Leituras também sincronizadas em tempo real com a planilha **{GOOGLE_SHEETS_NAME}**.")
+    if sheets_sync_enabled and sheets_secret_configurado:
+        if st.session_state.sheets_sync_error_shown:
+            st.caption("⚠️ A sincronização com o Google Sheets encontrou um erro durante a simulação (veja acima).")
+        else:
+            st.caption(f"Leituras também sincronizadas em lote com a planilha **{GOOGLE_SHEETS_NAME}**.")
 
 # --- Download dos CSVs para o Looker Studio (caminho manual, sem credenciais) ---
 # Necessário especialmente no Streamlit Cloud, onde não há acesso direto ao
