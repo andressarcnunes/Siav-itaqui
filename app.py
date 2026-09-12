@@ -322,6 +322,17 @@ email_destinatario = st.sidebar.text_input(
 )
 st.sidebar.caption("Ex.: brigada@empresa.com")
 
+try:
+    _smtp_host_padrao = _secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com")
+    _smtp_port_padrao = int(_secrets.get("SIAV_SMTP_PORT", 587))
+    _smtp_user_padrao = _secrets.get("SIAV_SMTP_USER", "")
+    _smtp_password_padrao = _secrets.get("SIAV_SMTP_PASSWORD", "")
+except Exception:
+    _smtp_host_padrao = "smtp.gmail.com"
+    _smtp_port_padrao = 587
+    _smtp_user_padrao = ""
+    _smtp_password_padrao = ""
+
 smtp_host = st.sidebar.text_input("Servidor SMTP", value=_smtp_host_padrao)
 smtp_port = st.sidebar.number_input("Porta SMTP", value=_smtp_port_padrao, step=1)
 smtp_user = st.sidebar.text_input("Usuário SMTP (remetente)", value=_smtp_user_padrao)
@@ -330,10 +341,13 @@ smtp_password = st.sidebar.text_input("Senha SMTP", value=_smtp_password_padrao,
 test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste")
 
 if test_email_button:
-    mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
+    bloco_teste = bloco_operador(operador_info) if 'bloco_operador' in locals() and 'operador_info' in locals() else ""
+    mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui.\n\nSe você recebeu esta mensagem, a configuração de SMTP está correta."
+    if bloco_teste:
+        mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
 
     ok, erro = enviar_email_alerta(
-        destinatario=email_email_destinatario if 'email_email_destinatario' in locals() else email_destinatario,
+        destinatario=email_destinatario,
         assunto="[SIAV-Itaqui] E-mail de teste",
         mensagem=mensagem_teste,
         smtp_host=smtp_host,
@@ -345,11 +359,6 @@ if test_email_button:
         st.sidebar.success("E-mail de teste enviado com sucesso")
     else:
         st.sidebar.error(f"Falha ao enviar e-mail de teste: {str(erro)}")
-        if ok:
-            st.sidebar.success("E-mail de teste enviado com sucesso!")
-        else:
-            st.sidebar.error("Falha ao enviar e-mail de teste: " + str(erro))
-
 # --- Barra lateral: sincronização com Google Sheets/Looker (opcional) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 Sincronização com Looker Studio")
