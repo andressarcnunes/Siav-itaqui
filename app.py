@@ -139,8 +139,8 @@ else:
     if ser_arduino and ser_arduino.is_open:
         st.sidebar.success(f"Conectado ao Arduino na {porta_com}")
 
-start_button = st.sidebar.button("▶️ Iniciar Captura/Simulação", use_container_width=True, type="primary")
-reset_button = st.sidebar.button("🔄 Resetar", use_container_width=True)
+start_button = st.sidebar.button("▶️ Iniciar Captura/Simulação"))
+reset_button = st.sidebar.button("🔄 Resetar")
 
 if reset_button:
     st.session_state.history.clear()
