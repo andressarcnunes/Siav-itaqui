@@ -322,7 +322,7 @@ email_destinatario = st.sidebar.text_input(
 )
 st.sidebar.caption("Ex.: brigada@empresa.com")
 
-smtp_expander = st.sidebar.expander("Configuração do servidor SMTP")
+smtp_expander = st.expander("Configuração do servidor SMTP")
 with smtp_expander:
     st.caption(
         "Dica: guarde essas credenciais em .streamlit/secrets.toml em vez "
