@@ -26,6 +26,7 @@ from datetime import datetime
 
 import pandas as pd
 import serial
+from serial.tools import list_ports
 import streamlit as st
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
@@ -71,6 +72,17 @@ SHEETS_FLUSH_INTERVAL_S = 2.0
 ARDUINO_BASELINE_VIBRATION_MMS = 0.8
 PORTA_SERIAL_PADRAO = "COM4"
 
+# Abrir a porta serial reinicia o Arduino Uno (toggle do pino DTR). Se a
+# gente ler imediatamente depois de abrir, pega lixo de boot (prints do
+# setup(), bootloader, etc.). Espera esse tempo antes de come\u00e7ar a ler.
+ARDUINO_RESET_DELAY_S = 2.0
+# Quantas vezes tenta reabrir a porta automaticamente se a conex\u00e3o cair
+# no meio de uma leitura (cabo USB frouxo, ru\u00eddo, etc.) antes de desistir.
+MAX_RECONEXOES = 3
+# Se nenhuma leitura V\u00c1LIDA chegar por esse tempo, avisa o operador que o
+# sensor pode estar desligado/mal conectado, mesmo que a porta continue aberta.
+LEITURA_TIMEOUT_SEM_DADOS_S = 8.0
+
 
 class ArduinoConnectionError(Exception):
     """Erro ao abrir ou usar a porta serial do Arduino."""
@@ -80,11 +92,23 @@ class ArduinoConnectionError(Exception):
 # ---------------------------------------------------------------------------
 # Leitura Serial do Arduino
 # ---------------------------------------------------------------------------
+def portas_seriais_disponiveis():
+    """
+    Lista as portas seriais que o sistema operacional enxerga agora (ex.:
+    COM3, COM4 no Windows; /dev/ttyUSB0 no Linux). Ajuda o operador a nao
+    ter que descobrir a porta certa no Gerenciador de Dispositivos toda vez.
+    Se a deteccao falhar por qualquer motivo, retorna lista vazia e o app
+    cai para o campo de texto manual.
+    """
+    try:
+        return [p.device for p in list_ports.comports()]
+    except Exception:
+        return []
+
+
 def abrir_conexao_serial(porta, baudrate):
     try:
         conexao = serial.Serial(porta, baudrate=baudrate, timeout=2)
-        conexao.reset_input_buffer()
-        return conexao
     except serial.SerialException as exc:
         mensagem = (
             "Nao foi possivel abrir a porta " + str(porta) +
@@ -93,40 +117,111 @@ def abrir_conexao_serial(porta, baudrate):
             "(2) a porta informada e a correta (confira no Gerenciador de "
             "Dispositivos do Windows); "
             "(3) nenhum outro programa esta usando a porta (ex.: Monitor "
-            "Serial da Arduino IDE aberto). Detalhe tecnico: " + str(exc)
+            "Serial da Arduino IDE aberto); "
+            "(4) o baudrate configurado aqui e o MESMO usado no "
+            "Serial.begin() do sketch do Arduino. "
+            "Detalhe tecnico: " + str(exc)
         )
         raise ArduinoConnectionError(mensagem) from exc
 
+    # Da tempo do Arduino reiniciar (acontece sempre que a porta serial e
+    # aberta) e so entao limpa o buffer, descartando qualquer lixo de boot.
+    time.sleep(ARDUINO_RESET_DELAY_S)
+    conexao.reset_input_buffer()
+    return conexao
 
-def ler_arduino_feed(conexao, duration_s, berco):
+
+def ler_arduino_feed(porta, baudrate, duration_s, berco, diagnostico_callback=None):
+    """
+    Le do Arduino por ate duration_s segundos.
+
+    Melhorias em relacao a uma leitura serial "ingenua":
+      - reset_delay ao abrir a porta, para nao interpretar lixo de boot
+        como leitura valida;
+      - reconexao automatica (ate MAX_RECONEXOES vezes) se a porta cair
+        no meio da leitura, em vez de encerrar a leitura na primeira falha;
+      - aviso ao operador se o sensor ficar em silencio por muito tempo
+        (porta aberta, mas sem linha valida chegando -- geralmente fiacao
+        ou sketch com problema);
+      - callback opcional para mostrar as ultimas linhas brutas recebidas
+        na tela (util para depurar o formato que o Arduino esta mandando).
+    """
     inicio = time.time()
-    while time.time() - inicio < duration_s:
+    tentativas_reconexao = 0
+    ultimo_dado_valido = time.time()
+    ultimo_aviso_silencio = 0.0
+
+    try:
+        conexao = abrir_conexao_serial(porta, baudrate)
+    except ArduinoConnectionError:
+        raise
+
+    try:
+        while time.time() - inicio < duration_s:
+            try:
+                linha_bruta = conexao.readline().decode("utf-8", errors="ignore").strip()
+            except serial.SerialException as exc:
+                tentativas_reconexao += 1
+                if tentativas_reconexao > MAX_RECONEXOES:
+                    st.error(
+                        "Conexao com o Arduino perdida definitivamente apos " +
+                        str(MAX_RECONEXOES) + " tentativas de reconexao: " + str(exc)
+                    )
+                    return
+                st.warning(
+                    "Conexao com o Arduino caiu (tentativa " + str(tentativas_reconexao) +
+                    " de " + str(MAX_RECONEXOES) + "). Tentando reconectar em 1.5s..."
+                )
+                try:
+                    conexao.close()
+                except Exception:
+                    pass
+                time.sleep(1.5)
+                try:
+                    conexao = abrir_conexao_serial(porta, baudrate)
+                    ultimo_dado_valido = time.time()
+                except ArduinoConnectionError as exc2:
+                    st.warning("Tentativa de reconexao falhou: " + str(exc2))
+                continue
+
+            if linha_bruta and diagnostico_callback is not None:
+                diagnostico_callback(linha_bruta)
+
+            if not linha_bruta:
+                if time.time() - ultimo_dado_valido > LEITURA_TIMEOUT_SEM_DADOS_S:
+                    if time.time() - ultimo_aviso_silencio > LEITURA_TIMEOUT_SEM_DADOS_S:
+                        st.warning(
+                            "Nenhuma leitura valida do Arduino ha mais de " +
+                            str(int(LEITURA_TIMEOUT_SEM_DADOS_S)) + "s. A porta "
+                            "continua aberta -- verifique o sketch (Serial.println) "
+                            "e a fiacao do sensor de pressao."
+                        )
+                        ultimo_aviso_silencio = time.time()
+                continue
+
+            partes = linha_bruta.split(",")
+            if len(partes) != 2:
+                continue
+
+            try:
+                pressao = float(partes[0].strip())
+                vazao = float(partes[1].strip())
+            except ValueError:
+                continue
+
+            ultimo_dado_valido = time.time()
+            yield {
+                "timestamp": datetime.now(),
+                "berco": berco,
+                "pressure_bar": pressao,
+                "flow_m3h": vazao,
+                "vibration_mms": ARDUINO_BASELINE_VIBRATION_MMS,
+            }
+    finally:
         try:
-            linha_bruta = conexao.readline().decode("utf-8", errors="ignore").strip()
-        except serial.SerialException as exc:
-            st.warning("Conexao com o Arduino perdida durante a leitura: " + str(exc))
-            return
-
-        if not linha_bruta:
-            continue
-
-        partes = linha_bruta.split(",")
-        if len(partes) != 2:
-            continue
-
-        try:
-            pressao = float(partes[0].strip())
-            vazao = float(partes[1].strip())
-        except ValueError:
-            continue
-
-        yield {
-            "timestamp": datetime.now(),
-            "berco": berco,
-            "pressure_bar": pressao,
-            "flow_m3h": vazao,
-            "vibration_mms": ARDUINO_BASELINE_VIBRATION_MMS,
-        }
+            conexao.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +296,27 @@ def oferecer_download(destino, rotulo, dados_bytes, nome_arquivo, mime):
     destino.markdown(href, unsafe_allow_html=True)
 
 
+def obter_expander(destino, titulo):
+    """
+    st.expander() só ganhou esse nome definitivo em versões mais recentes.
+    Em versões antigas do Streamlit (como a 0.84.1), o mesmo recurso ainda
+    se chama st.beta_expander(). Tenta o nome novo primeiro; se falhar,
+    cai para o nome antigo.
+    """
+    try:
+        return destino.expander(titulo)
+    except Exception:
+        return destino.beta_expander(titulo)
+
+
+def obter_colunas(quantidade):
+    """Mesma ideia do obter_expander, mas para st.columns() / st.beta_columns()."""
+    try:
+        return st.columns(quantidade)
+    except Exception:
+        return st.beta_columns(quantidade)
+
+
 def init_state():
     defaults = {
         "pipeline": None,
@@ -249,13 +365,31 @@ if fonte_dados == "Simulação (cenários)":
     )
     porta_serial = None
     baudrate_serial = None
+    mostrar_diagnostico = False
 else:
     st.sidebar.warning(
         "Este modo so funciona rodando o Streamlit localmente, no "
         "computador fisicamente conectado ao Arduino por USB."
     )
-    porta_serial = st.sidebar.text_input("Porta serial", value=PORTA_SERIAL_PADRAO)
+
+    portas_detectadas = portas_seriais_disponiveis()
+    if portas_detectadas:
+        opcoes_porta = portas_detectadas + ["Digitar manualmente..."]
+        escolha_porta = st.sidebar.selectbox("Porta serial detectada", opcoes_porta)
+        if escolha_porta == "Digitar manualmente...":
+            porta_serial = st.sidebar.text_input("Porta serial (manual)", value=PORTA_SERIAL_PADRAO)
+        else:
+            porta_serial = escolha_porta
+    else:
+        st.sidebar.caption("Nenhuma porta serial detectada automaticamente — digite manualmente.")
+        porta_serial = st.sidebar.text_input("Porta serial", value=PORTA_SERIAL_PADRAO)
+
     baudrate_serial = st.sidebar.number_input("Baudrate", value=115200, step=9600)
+    st.sidebar.caption("Precisa ser IGUAL ao Serial.begin(...) usado no sketch do Arduino.")
+    mostrar_diagnostico = st.sidebar.checkbox(
+        "Mostrar linhas brutas recebidas (diagnóstico)", value=False,
+        help="Útil para conferir se o Arduino está mandando dado no formato esperado (pressao,vazao)."
+    )
     scenario = None
     speed = None
 
@@ -322,43 +456,59 @@ email_destinatario = st.sidebar.text_input(
 )
 st.sidebar.caption("Ex.: brigada@empresa.com")
 
-try:
-    _smtp_host_padrao = _secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com")
-    _smtp_port_padrao = int(_secrets.get("SIAV_SMTP_PORT", 587))
-    _smtp_user_padrao = _secrets.get("SIAV_SMTP_USER", "")
-    _smtp_password_padrao = _secrets.get("SIAV_SMTP_PASSWORD", "")
-except Exception:
-    _smtp_host_padrao = "smtp.gmail.com"
-    _smtp_port_padrao = 587
-    _smtp_user_padrao = ""
-    _smtp_password_padrao = ""
+smtp_expander = obter_expander(st.sidebar, "Configuração do servidor SMTP")
+with smtp_expander:
+    st.caption(
+        "Dica: guarde essas credenciais em .streamlit/secrets.toml em vez "
+        "de digitar toda vez. Ex.: SIAV_SMTP_HOST, SIAV_SMTP_USER, "
+        "SIAV_SMTP_PASSWORD (use uma 'senha de app', nao a senha normal)."
+    )
+    try:
+        _smtp_host_padrao = _secrets.get("SIAV_SMTP_HOST", "smtp.gmail.com")
+        _smtp_port_padrao = int(_secrets.get("SIAV_SMTP_PORT", 587))
+        _smtp_user_padrao = _secrets.get("SIAV_SMTP_USER", "")
+        _smtp_password_padrao = _secrets.get("SIAV_SMTP_PASSWORD", "")
+    except Exception:
+        _smtp_host_padrao = "smtp.gmail.com"
+        _smtp_port_padrao = 587
+        _smtp_user_padrao = ""
+        _smtp_password_padrao = ""
 
-smtp_host = st.sidebar.text_input("Servidor SMTP", value=_smtp_host_padrao)
-smtp_port = st.sidebar.number_input("Porta SMTP", value=_smtp_port_padrao, step=1)
-smtp_user = st.sidebar.text_input("Usuário SMTP (remetente)", value=_smtp_user_padrao)
-smtp_password = st.sidebar.text_input("Senha SMTP", value=_smtp_password_padrao, type="password")
+    smtp_host = st.text_input("Servidor SMTP", value=_smtp_host_padrao)
+    smtp_port = st.number_input("Porta SMTP", value=_smtp_port_padrao, step=1)
+    smtp_user = st.text_input("Usuário SMTP (remetente)", value=_smtp_user_padrao)
+    smtp_password = st.text_input("Senha SMTP", value=_smtp_password_padrao, type="password")
 
 test_email_button = st.sidebar.button("✉️ Enviar e-mail de teste")
 
 if test_email_button:
-    bloco_teste = bloco_operador(operador_info) if 'bloco_operador' in locals() and 'operador_info' in locals() else ""
-    mensagem_teste = "Este é um e-mail de teste do SIAV-Itaqui.\n\nSe você recebeu esta mensagem, a configuração de SMTP está correta."
-    if bloco_teste:
-        mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
-
-    ok, erro = enviar_email_alerta(
-        destinatario=email_destinatario,
-        assunto="[SIAV-Itaqui] E-mail de teste",
-        mensagem=mensagem_teste,
-        smtp_host=smtp_host,
-        smtp_port=int(smtp_port),
-        smtp_user=smtp_user,
-        smtp_password=smtp_password,
-    )
-    if ok:
-        st.sidebar.success("E-mail de teste enviado com sucesso")
+    if not email_destinatario or not smtp_host or not smtp_user or not smtp_password:
+        st.sidebar.error("Preencha o e-mail de destino e as credenciais SMTP antes de testar.")
     else:
-        st.sidebar.error(f"Falha ao enviar e-mail de teste: {str(erro)}")
+        bloco_teste = _bloco_operador(operador_info)
+        mensagem_teste = (
+            "Este e um e-mail de teste do SIAV-Itaqui.\n\n"
+            "Se voce recebeu esta mensagem, a configuracao de SMTP esta "
+            "correta e os alertas de Microvazamento/Ruptura serao "
+            "enviados normalmente para este endereco."
+        )
+        if bloco_teste:
+            mensagem_teste = mensagem_teste + "\n\n" + bloco_teste
+
+        ok, erro = enviar_email_alerta(
+            destinatario=email_destinatario,
+            assunto="[SIAV-Itaqui] E-mail de teste",
+            mensagem=mensagem_teste,
+            smtp_host=smtp_host,
+            smtp_port=int(smtp_port),
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
+        )
+        if ok:
+            st.sidebar.success("E-mail de teste enviado com sucesso!")
+        else:
+            st.sidebar.error("Falha ao enviar e-mail de teste: " + str(erro))
+
 # --- Barra lateral: sincronização com Google Sheets/Looker (opcional) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 Sincronização com Looker Studio")
@@ -605,19 +755,29 @@ elif start_button:
     )
 
     if fonte_dados == "Arduino (Leitura Serial USB)":
-        conexao_serial = None
+        st.info("Lendo do Arduino na porta " + str(porta_serial) + " (" + str(int(baudrate_serial)) + " baud)...")
+
+        diagnostico_placeholder = obter_expander(st, "🔍 Diagnóstico: últimas linhas brutas recebidas") \
+            if mostrar_diagnostico else None
+        linhas_diagnostico = deque(maxlen=10)
+        diagnostico_codigo = diagnostico_placeholder.empty() if diagnostico_placeholder is not None else None
+
+        def registrar_linha_diagnostico(linha):
+            linhas_diagnostico.append(linha)
+            if diagnostico_codigo is not None:
+                diagnostico_codigo.code("\n".join(linhas_diagnostico), language=None)
+
         try:
-            conexao_serial = abrir_conexao_serial(porta_serial, int(baudrate_serial))
+            for reading in ler_arduino_feed(
+                porta_serial,
+                int(baudrate_serial),
+                duration_s,
+                berco,
+                diagnostico_callback=registrar_linha_diagnostico if mostrar_diagnostico else None,
+            ):
+                processar_leitura(reading)
         except ArduinoConnectionError as exc:
             st.error(str(exc))
-
-        if conexao_serial is not None:
-            st.info("Lendo do Arduino na porta " + str(porta_serial) + " (" + str(int(baudrate_serial)) + " baud)...")
-            try:
-                for reading in ler_arduino_feed(conexao_serial, duration_s, berco):
-                    processar_leitura(reading)
-            finally:
-                conexao_serial.close()
     else:
         for reading in simulate_live_feed(scenario_label=scenario, berco=berco, duration_s=duration_s):
             processar_leitura(reading)
@@ -646,7 +806,7 @@ st.caption(
     "Google) para conectar ao Looker Studio."
 )
 
-col_dl1, col_dl2 = st.columns(2)
+col_dl1, col_dl2 = obter_colunas(2)
 
 if os.path.exists(data_export.READINGS_CSV):
     arquivo_leituras = open(data_export.READINGS_CSV, "rb")
