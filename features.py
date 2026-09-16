@@ -3,14 +3,14 @@ features.py
 ===========
 Engenharia de features para o SIAV-Itaqui.
 
-Uma leitura isolada de pressão (ex.: "7.9 bar") não diz muito sozinha --
-o que denuncia um vazamento é a TENDÊNCIA: pressão caindo, vazão subindo,
-variação ficando maior. Este módulo transforma as leituras brutas do
-simulador em features que capturam essa tendência, para o Random Forest
-conseguir aprender os padrões de cada cenário.
+Uma leitura isolada de pressão não diz muito sozinha -- o que denuncia um
+vazamento é a TENDÊNCIA: pressão caindo, vazão subindo, variação ficando
+maior. Este módulo transforma as leituras brutas do simulador em features
+que capturam essa tendência, para o Random Forest conseguir aprender os
+padrões de cada cenário.
 
-Também é usado pelo dashboard em tempo real (Etapa 4), então a lógica
-fica centralizada aqui em vez de duplicada.
+Também é usado pelo dashboard em tempo real, então a lógica fica
+centralizada aqui em vez de duplicada.
 """
 
 from __future__ import annotations
@@ -25,12 +25,6 @@ ROLLING_WINDOWS = (5, 15)  # em número de leituras (segundos, no nosso caso)
 def assign_sequence_ids(df: pd.DataFrame, gap_seconds: float = 2.0) -> pd.DataFrame:
     """
     Identifica sequências contínuas de telemetria por berço.
-
-    O simulador gera bursts de leituras com um intervalo de alguns
-    segundos entre eles. Aqui a gente detecta esses intervalos para
-    marcar onde uma sequência termina e outra começa -- isso é importante
-    para o treino/teste não "vazar" informação entre sequências diferentes
-    (ver train_model.py).
     """
     df = df.sort_values(["berco", "timestamp"]).reset_index(drop=True)
     seq_id = 0
@@ -53,14 +47,6 @@ def assign_sequence_ids(df: pd.DataFrame, gap_seconds: float = 2.0) -> pd.DataFr
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Gera as features usadas pelo modelo, a partir das leituras brutas.
-
-    Para cada sensor (pressão, vazão, vibração), calcula:
-      - média móvel (5 e 15 leituras)   -> suaviza ruído, mostra tendência
-      - desvio padrão móvel             -> instabilidade da leitura
-      - variação (delta) de 1 e 5 leituras atrás -> velocidade da mudança
-
-    Isso é calculado SEPARADAMENTE por berço e por sequência, para nunca
-    misturar a "memória" de uma sequência com a de outra.
     """
     if "sequence_id" not in df.columns:
         df = assign_sequence_ids(df)
@@ -83,10 +69,8 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         df[delta5_col] = grouped[col].transform(lambda s: s.diff(5).fillna(0))
         feature_cols += [delta1_col, delta5_col]
 
-    # valor bruto da leitura atual também entra como feature
     feature_cols = SENSOR_COLUMNS + feature_cols
 
-    # berço como feature binária (só temos 104 e 108 neste projeto)
     df["berco_108"] = (df["berco"] == "108").astype(int)
     feature_cols.append("berco_108")
 
