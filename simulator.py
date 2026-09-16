@@ -5,7 +5,7 @@ Simulador de telemetria dos berços 104 e 108 do Porto do Itaqui.
 
 Gera séries temporais sintéticas de pressão, vazão e vibração, simulando:
   - Operação normal (com ruído realista de sensores industriais)
-  - Microvazamento (queda gradual e sutil de pressão)
+  - Microvazamento (queda gradual e perceptível de pressão)
   - Ruptura parcial (queda moderada e súbita, com pico de vazão)
   - Ruptura total (colapso rápido de pressão, disparo de vazão e vibração)
 
@@ -37,7 +37,7 @@ BERCOS = ["104", "108"]
 # Calibrado conforme a Granel Química: a faixa segura acordada é de 6.0 a
 # 7.0 bar, com 6.5 bar como ponto central de operação normal -- mantendo
 # uma margem confortável em relação ao limite de alarme crítico (8.0 bar,
-# ver CRITICALITY_MAP / live_pipeline.py).
+# ver PRESSURE_CRITICAL_LIMIT_BAR em live_pipeline.py).
 BASELINE_PRESSURE_BAR = 6.5
 BASELINE_FLOW_M3H = 150.0
 BASELINE_VIBRATION_MMS = 0.8
@@ -82,15 +82,17 @@ def _normal_series(n: int, rng: np.random.Generator) -> dict:
 
 def _inject_microvazamento(data: dict, start_idx: int, rng: np.random.Generator) -> dict:
     """
-    Microvazamento: queda LENTA e sutil de pressão (difícil de perceber a
-    olho nu), com leve aumento de vazão (o líquido escapando) e vibração
-    praticamente inalterada. É o cenário mais difícil de detectar --
-    exatamente o que o modelo precisa aprender a pegar cedo.
+    Microvazamento: queda LENTA porém agora mais PERCEPTÍVEL de pressão
+    (rampa de 0.03, antes 0.01 -- ainda gradual, mas com tendência clara
+    o bastante para o modelo aprender a distinguir de ruído comum), com
+    leve aumento de vazão (o líquido escapando) e vibração praticamente
+    inalterada.
     """
     n = len(data["pressure_bar"])
     tail = n - start_idx
-    # Queda gradual e progressiva (rampa suave, não abrupta)
-    ramp = np.linspace(0, 0.01 * tail, tail)  # até ~1% de queda acumulada por leitura
+    # Queda gradual, porém com inclinação mais marcada que antes (0.03 em
+    # vez de 0.01) -- até ~3% de queda acumulada por leitura ao longo da janela.
+    ramp = np.linspace(0, 0.03 * tail, tail)
     data["pressure_bar"][start_idx:] -= ramp + rng.normal(0, NOISE_PRESSURE, tail)
     data["flow_m3h"][start_idx:] += np.linspace(0, 3.0, tail) + rng.normal(0, NOISE_FLOW, tail)
     data["vibration_mms"][start_idx:] += rng.normal(0, NOISE_VIBRATION * 1.2, tail)
@@ -214,7 +216,7 @@ def build_training_dataset(
 def main():
     dataset = build_training_dataset()
 
-    output_path = "/home/claude/siav-itaqui/data/telemetry_dataset.csv"
+    output_path = "data/telemetry_dataset.csv"
     dataset.to_csv(output_path, index=False)
 
     print(f"Dataset gerado: {len(dataset)} leituras")
