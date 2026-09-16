@@ -4,19 +4,12 @@ alert_center.py
 Central de Alertas do SIAV-Itaqui — decide QUANDO um alerta deve ser
 confirmado (debounce, por berço) e PARA ONDE ele deve ir, conforme a
 criticidade (Baixa/Média/Crítica), incluindo o texto simulado/real de
-cada mensagem (Dashboard, SMS, WhatsApp e agora E-mail).
+cada mensagem (Dashboard, SMS, WhatsApp e E-mail).
 
 Essa lógica antes estava só dentro do dashboard (Etapa 4); agora fica
 centralizada aqui, então tanto o dashboard quanto qualquer script de
 linha de comando usam exatamente a mesma regra -- sem risco de as duas
 pontas divergirem com o tempo.
-
-Isso inclui a criticidade "Crítica" disparada tanto pelo modelo de ML
-quanto pela trava física do pressostato em live_pipeline.py (pressão >
-8.0 bar): como o AlertCenter trabalha apenas com o campo `criticality`
-já resolvido da previsão (`prediction["criticality"]`), ele não precisa
-saber a ORIGEM da criticidade -- ML ou regra física -- e despacha os
-mesmos 4 canais (Dashboard, SMS, WhatsApp, E-mail) em ambos os casos.
 
 Nesta fase de hackathon, o envio de SMS/WhatsApp continua SIMULADO (só
 registrado em log/tela). O E-MAIL, no entanto, é REAL: usa smtplib da
@@ -35,7 +28,14 @@ from dataclasses import dataclass, field
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-DEBOUNCE_TICKS = 2  # nº de leituras consecutivas iguais para confirmar uma mudança de estado
+# Nº de leituras consecutivas iguais para confirmar uma MUDANÇA de estado.
+# Subido de 2 para 4: com apenas 2 leituras, ruído normal de sensor (ou
+# uma previsão isolada divergente do Random Forest) já bastava para o
+# painel "piscar" entre estados (flicker) durante a demonstração. Exigir
+# 4 leituras seguidas iguais dá mais estabilidade visual sem mascarar uma
+# tendência real -- numa leitura por segundo, isso representa ~4s de
+# confirmação antes de qualquer troca de estado no painel/alerta.
+DEBOUNCE_TICKS = 4
 
 # "Email" foi adicionado a todos os níveis que geram alerta (Baixa em
 # diante), já que o pedido é notificar a brigada/gestão em qualquer
@@ -185,12 +185,6 @@ class AlertCenter:
         (após `debounce_ticks` leituras consecutivas iguais). Caso
         contrário, retorna None -- ainda não há alerta novo a despachar.
 
-        A criticidade recebida em `prediction["criticality"]` pode vir do
-        modelo de ML OU da trava física do pressostato em
-        live_pipeline.py (pressão > 8.0 bar força "Crítica" antes mesmo
-        de chegar aqui) -- para o AlertCenter as duas origens são
-        equivalentes, pois ele só olha para o valor já resolvido.
-
         `operador`: dict opcional com a identificação do operador de turno
         no momento do disparo (chaves: nome, matricula, turno, terminal).
         É anexado ao e-mail/notificação e gravado no próprio DispatchedAlert
@@ -216,12 +210,7 @@ class AlertCenter:
             return None
 
         self._confirmed[berco] = raw_criticality
-        # .get(..., []) em vez de indexação direta: se algum dia surgir uma
-        # criticidade nova/inesperada (ex.: erro de digitação em outra
-        # camada), o AlertCenter não quebra -- simplesmente não despacha
-        # para nenhum canal, em vez de lançar KeyError e derrubar o
-        # pipeline de alertas inteiro.
-        channels = CRITICALITY_CHANNELS.get(raw_criticality, [])
+        channels = CRITICALITY_CHANNELS[raw_criticality]
         hora = prediction["timestamp"].strftime("%H:%M:%S")
         estado_fmt = _ESTADO_LEGIVEL.get(prediction["predicted_label"], prediction["predicted_label"])
         templates = _TEMPLATES.get(raw_criticality, {})
