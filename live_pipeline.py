@@ -8,10 +8,12 @@ Esse é o elo entre o que já temos (modelo treinado em lote) e o dashboard
 (Etapa 4): o Streamlit vai chamar este pipeline a cada novo "tick" de
 sensor simulado e mostrar o resultado na tela.
 
-Duas peças principais:
+Peças principais:
   - SIAVPipeline: mantém um histórico curto de leituras por berço (preciso
-    de contexto para calcular médias móveis) e devolve a previsão do
-    modelo para a leitura mais recente.
+    de contexto para calcular médias móveis), devolve a previsão do
+    modelo para a leitura mais recente, e aplica um FILTRO DE CONFIANÇA
+    (ver CONFIDENCE_THRESHOLD abaixo) para não trocar de estado com base
+    em previsões estatisticamente incertas.
   - simulate_live_feed(): gera leituras "chegando aos poucos" reutilizando
     a MESMA física do simulador da Etapa 1 (evita ter duas versões
     divergentes da lógica de vazamento).
@@ -52,8 +54,19 @@ CRITICALITY_MAP = {
 # (6.0-7.0 bar em operação normal) independentemente do que o modelo de
 # ML preveja. Esta é uma trava de segurança determinística (pressostato),
 # não uma inferência estatística -- atua como uma segunda camada de
-# proteção que nunca deve ser mascarada pelo modelo.
+# proteção que nunca deve ser mascarada pelo modelo nem pelo filtro de
+# confiança abaixo.
 PRESSURE_CRITICAL_LIMIT_BAR = 8.0
+
+# Filtro de confiança estatística: o Random Forest já calcula a
+# probabilidade de cada classe (predict_proba). Se a previsão da leitura
+# atual tiver confiança MENOR que este limite, o pipeline NÃO troca de
+# estado -- mantém o último estado ESTÁVEL (confiante) conhecido por
+# aquele berço. Isso não "falsifica" nada: é o próprio modelo dizendo "não
+# tenho certeza suficiente", e a decisão de engenharia é não agir sobre
+# incerteza, evitando oscilação (flicker) na "zona cinzenta" entre dois
+# estados sem nunca inventar um resultado que o modelo não sustente.
+CONFIDENCE_THRESHOLD = 0.70
 
 
 class SIAVPipeline:
@@ -63,7 +76,7 @@ class SIAVPipeline:
     tendência (médias móveis, variação).
     """
 
-    def __init__(self, model_dir: str = MODEL_DIR):
+    def __init__(self, model_dir: str = MODEL_DIR, confidence_threshold: float = CONFIDENCE_THRESHOLD):
         # Tenta a pasta models/ primeiro; se não achar, tenta a raiz do
         # projeto (caso os arquivos tenham sido enviados soltos, sem pasta).
         candidates = [model_dir, "."]
@@ -85,9 +98,13 @@ class SIAVPipeline:
         self.model = joblib.load(model_path)
         with open(columns_path) as f:
             self.feature_columns = json.load(f)
+        self.confidence_threshold = confidence_threshold
 
         # um histórico (buffer) separado por berço, já que cada linha tem sua própria tendência
         self._buffers: dict[str, deque] = {}
+        # último estado CONFIANTE (>= confidence_threshold) confirmado por berço.
+        # Usado como "estado mantido" quando a previsão atual é incerta.
+        self._last_stable_label: dict[str, str] = {}
 
     def _get_buffer(self, berco: str) -> deque:
         if berco not in self._buffers:
@@ -99,18 +116,26 @@ class SIAVPipeline:
         Recebe uma leitura nova (dict com timestamp, berco, pressure_bar,
         flow_m3h, vibration_mms) e devolve a previsão do modelo para ela.
 
-        Retorna um dict com: label previsto, criticidade, probabilidade de
-        cada classe, e a leitura original (para o dashboard exibir).
+        Retorna um dict com: label previsto (já filtrado por confiança),
+        criticidade, probabilidade de cada classe (dados brutos do
+        modelo, sem filtro -- útil para depuração/relatório), e a leitura
+        original (para o dashboard exibir).
 
-        Além da classificação por ML, aplica uma regra estrita de
-        segurança do pressostato: se a pressão física da leitura
-        ultrapassar `PRESSURE_CRITICAL_LIMIT_BAR` (8.0 bar), o sistema
-        força imediatamente `predicted_label = "ruptura_total"` e
-        `criticality = "Crítica"`, independentemente do que o modelo
-        tenha previsto. Isso garante que o alarme crítico dispare mesmo
-        que o modelo de ML, por qualquer motivo, não classifique a
-        leitura corretamente -- a trava física tem sempre a palavra
-        final.
+        Duas camadas de estabilização são aplicadas, nesta ordem:
+
+        1) FILTRO DE CONFIANÇA (estatístico): se a probabilidade da classe
+           prevista pelo Random Forest for menor que `confidence_threshold`
+           (padrão 70%), o pipeline não troca de estado -- mantém o último
+           estado estável (confiante) já conhecido para aquele berço. Isso
+           suaviza a "zona cinzenta" entre dois estados sem inventar
+           nenhum resultado: é uma decisão de não agir sobre incerteza.
+
+        2) TRAVA DE SEGURANÇA DO PRESSOSTATO (física, não-ML): se a
+           pressão da leitura ultrapassar `PRESSURE_CRITICAL_LIMIT_BAR`
+           (8.0 bar), o sistema força `predicted_label = "ruptura_total"`
+           e `criticality = "Crítica"` incondicionalmente -- essa trava
+           nunca é suavizada pelo filtro de confiança, pois representa um
+           limite físico determinístico da operação, não uma inferência.
         """
         berco = reading["berco"]
         buffer = self._get_buffer(berco)
@@ -124,14 +149,28 @@ class SIAVPipeline:
 
         last_row = df.iloc[[-1]][self.feature_columns]
 
-        predicted_label = self.model.predict(last_row)[0]
+        raw_predicted_label = self.model.predict(last_row)[0]
         probabilities = dict(zip(self.model.classes_, self.model.predict_proba(last_row)[0]))
+        confidence = probabilities[raw_predicted_label]
+
+        # --- Filtro de confiança (estatístico) ---
+        stable_label = self._last_stable_label.get(berco, "normal")
+        if confidence >= self.confidence_threshold:
+            predicted_label = raw_predicted_label
+            self._last_stable_label[berco] = predicted_label
+        else:
+            # Previsão incerta: mantém o último estado estável em vez de
+            # trocar com base numa leitura estatisticamente pouco confiável.
+            predicted_label = stable_label
+
         criticality = CRITICALITY_MAP[predicted_label]
 
         # --- Trava de segurança do pressostato (regra física, não-ML) ---
+        # Sempre tem prioridade máxima -- nunca é suavizada pelo filtro acima.
         if reading["pressure_bar"] > PRESSURE_CRITICAL_LIMIT_BAR:
             predicted_label = "ruptura_total"
             criticality = "Crítica"
+            self._last_stable_label[berco] = predicted_label
 
         return {
             "timestamp": reading["timestamp"],
@@ -141,7 +180,11 @@ class SIAVPipeline:
             "vibration_mms": reading["vibration_mms"],
             "predicted_label": predicted_label,
             "criticality": criticality,
+            # Probabilidades BRUTAS do modelo (sem filtro) -- úteis para
+            # depuração/relatório, mostram exatamente o que o RF calculou.
             "probabilities": {k: round(float(v), 3) for k, v in probabilities.items()},
+            "raw_predicted_label": raw_predicted_label,
+            "confidence": round(float(confidence), 3),
         }
 
 
@@ -180,15 +223,15 @@ def _demo():
     pipeline = SIAVPipeline()
 
     print("Simulando leituras ao vivo do berço 104 (cenário: ruptura_parcial)...\n")
-    print(f"{'segundo':>7} | {'pressão':>8} | {'previsto':>16} | {'criticidade':>11}")
-    print("-" * 55)
+    print(f"{'segundo':>7} | {'pressão':>8} | {'previsto':>16} | {'criticidade':>11} | {'confiança':>9}")
+    print("-" * 68)
 
     for i, reading in enumerate(simulate_live_feed(scenario_label="ruptura_parcial", duration_s=90)):
         result = pipeline.process_reading(reading)
-        marker = "  <-- mudou!" if i > 0 and result["predicted_label"] != "normal" and i == 1 else ""
         print(
             f"{i:>7} | {result['pressure_bar']:>8.2f} | "
-            f"{result['predicted_label']:>16} | {result['criticality']:>11}"
+            f"{result['predicted_label']:>16} | {result['criticality']:>11} | "
+            f"{result['confidence']:>8.1%}"
         )
 
     print("\nDemonstração concluída. O pipeline reagiu à queda de pressão em tempo real.")
