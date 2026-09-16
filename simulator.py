@@ -33,10 +33,20 @@ from datetime import datetime, timedelta
 
 BERCOS = ["104", "108"]
 
-# Linha de base em operação normal
-BASELINE_PRESSURE_BAR = 8.0
+# Linha de base em operação normal.
+# Calibrado conforme a Granel Química: a faixa segura acordada é de 6.0 a
+# 7.0 bar, com 6.5 bar como ponto central de operação normal -- mantendo
+# uma margem confortável em relação ao limite de alarme crítico (8.0 bar,
+# ver CRITICALITY_MAP / live_pipeline.py).
+BASELINE_PRESSURE_BAR = 6.5
 BASELINE_FLOW_M3H = 150.0
 BASELINE_VIBRATION_MMS = 0.8
+
+# Faixa segura de operação normal (bar), usada para "grampear" (clip) a
+# pressão simulada em operação normal e evitar que o ruído gaussiano, por
+# acaso, gere leituras fora da faixa acordada com a operação.
+NORMAL_PRESSURE_MIN_BAR = 6.0
+NORMAL_PRESSURE_MAX_BAR = 7.0
 
 # Ruído (desvio padrão) de sensores em operação normal
 NOISE_PRESSURE = 0.05
@@ -55,8 +65,16 @@ class ScenarioConfig:
 
 
 def _normal_series(n: int, rng: np.random.Generator) -> dict:
-    """Gera n leituras de operação normal, com ruído gaussiano realista."""
+    """
+    Gera n leituras de operação normal, com ruído gaussiano realista.
+
+    A pressão é grampeada (np.clip) na faixa segura acordada com a
+    operação (6.0 a 7.0 bar) -- assim a simulação de "operação normal"
+    nunca produz, por acaso, uma leitura de pressão fora da faixa
+    estável real, mantendo-a longe do limiar de alarme crítico.
+    """
     pressure = BASELINE_PRESSURE_BAR + rng.normal(0, NOISE_PRESSURE, n)
+    pressure = np.clip(pressure, NORMAL_PRESSURE_MIN_BAR, NORMAL_PRESSURE_MAX_BAR)
     flow = BASELINE_FLOW_M3H + rng.normal(0, NOISE_FLOW, n)
     vibration = BASELINE_VIBRATION_MMS + rng.normal(0, NOISE_VIBRATION, n)
     return {"pressure_bar": pressure, "flow_m3h": flow, "vibration_mms": vibration}
