@@ -25,6 +25,7 @@ from collections import deque
 from datetime import datetime
 
 import pandas as pd
+import plotly.express as px
 import serial
 from serial.tools import list_ports
 import streamlit as st
@@ -56,6 +57,17 @@ CRITICALITY_COLORS = {
     "Baixa": "#f1c40f",
     "Média": "#e67e22",
     "Crítica": "#e74c3c",
+}
+
+# Mapa de cores por ESTADO DETECTADO (predicted_label), usado no gráfico de
+# telemetria em tempo real (Plotly) -- pedido do mentor: verde para operação
+# normal, tons crescentes de vermelho para os estados de anomalia, dando
+# leitura visual imediata de gravidade sem precisar olhar o texto.
+PREDICTED_LABEL_COLORS = {
+    "normal": "#2ecc71",
+    "microvazamento": "#e74c3c",
+    "ruptura_parcial": "#c0392b",
+    "ruptura_total": "#900c3f",
 }
 
 SCENARIO_LABELS = {
@@ -581,11 +593,47 @@ def render_metrics(result):
 
 
 def render_chart(history):
+    """
+    Renderiza o gráfico de telemetria (pressão ao longo do tempo) com
+    CORES DINÂMICAS por estado detectado (predicted_label), usando Plotly
+    -- pedido do mentor, para dar leitura visual imediata de quando a
+    linha estava normal (verde) ou em algum grau de anomalia (tons de
+    vermelho), sem precisar olhar o texto da classificação.
+
+    Nota técnica: como px.line() com `color` desenha uma trace por
+    categoria, o ponto exato de transição entre dois estados (ex.: do
+    último ponto "normal" para o primeiro "microvazamento") pode aparecer
+    como uma pequena descontinuidade visual entre as cores -- é um
+    comportamento conhecido do Plotly ao colorir por categoria discreta,
+    não um bug de dado. Os marcadores (`markers=True`) ajudam a deixar
+    cada leitura individual visível mesmo nesse ponto de transição.
+    """
     if not history:
         chart_placeholder.info("Clique em Iniciar na barra lateral para começar.")
         return
+
     df = pd.DataFrame(history)
-    chart_placeholder.line_chart(df.set_index("timestamp")[["pressure_bar"]])
+
+    fig = px.line(
+        df,
+        x="timestamp",
+        y="pressure_bar",
+        color="predicted_label",
+        color_discrete_map=PREDICTED_LABEL_COLORS,
+        markers=True,
+        labels={
+            "timestamp": "Horário",
+            "pressure_bar": "Pressão (bar)",
+            "predicted_label": "Estado detectado",
+        },
+    )
+    fig.update_layout(
+        legend_title_text="Estado detectado",
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_title="Horário",
+        yaxis_title="Pressão (bar)",
+    )
+    chart_placeholder.plotly_chart(fig, use_container_width=True)
 
 
 def render_alert_log():
