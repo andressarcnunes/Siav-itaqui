@@ -576,19 +576,29 @@ def render_status(criticality):
     status_placeholder.markdown(html, unsafe_allow_html=True)
 
 
-def render_metrics(result):
-    html = (
-        '<div style="display:flex;gap:24px;margin-bottom:12px;">'
-        '<div><div style="font-size:0.8em;color:#888;">Pressão (bar)</div>'
-        '<div style="font-size:1.6em;font-weight:700;">' + "{:.2f}".format(result["pressure_bar"]) + '</div></div>'
-        '<div><div style="font-size:0.8em;color:#888;">Vazão (m³/h)</div>'
-        '<div style="font-size:1.6em;font-weight:700;">' + "{:.1f}".format(result["flow_m3h"]) + '</div></div>'
-        '<div><div style="font-size:0.8em;color:#888;">Vibração (mm/s)</div>'
-        '<div style="font-size:1.6em;font-weight:700;">' + "{:.2f}".format(result["vibration_mms"]) + '</div></div>'
-        '<div><div style="font-size:0.8em;color:#888;">Classificação do modelo</div>'
-        '<div style="font-size:1.6em;font-weight:700;">' + str(result["predicted_label"]) + '</div></div>'
+def render_colored_metric(label, value, color):
+    """
+    Monta um bloco de métrica individual (rótulo + valor) com a cor
+    dinâmica passada — mesma paleta usada no gráfico de telemetria
+    (PREDICTED_LABEL_COLORS), para leitura visual imediata do estado.
+    """
+    return (
+        '<div>'
+        '<div style="font-size:0.8em;color:#888;">' + label + '</div>'
+        '<div style="font-size:1.6em;font-weight:700;color:' + color + ';">' + value + '</div>'
         '</div>'
     )
+
+
+def render_metrics(result):
+    cor = PREDICTED_LABEL_COLORS.get(result["predicted_label"], "#444")
+
+    html = '<div style="display:flex;gap:24px;margin-bottom:12px;">'
+    html += render_colored_metric("Pressão (bar)", "{:.2f}".format(result["pressure_bar"]), cor)
+    html += render_colored_metric("Vazão (m³/h)", "{:.1f}".format(result["flow_m3h"]), cor)
+    html += render_colored_metric("Vibração (mm/s)", "{:.2f}".format(result["vibration_mms"]), cor)
+    html += render_colored_metric("Classificação do modelo", str(result["predicted_label"]), cor)
+    html += '</div>'
     metrics_placeholder.markdown(html, unsafe_allow_html=True)
 
 
